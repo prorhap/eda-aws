@@ -1,0 +1,28 @@
+=== Hello from Slurm ===
+Host:         ip-10-0-7-92
+Date:         Fri May  8 09:32:56 UTC 2026
+JobID:        1
+Partition:    eda-r8i
+Nodes:        eda-r8i-dy-r128-1
+CPUs/task:    2
+Working dir:  /fsxz/work/jobs/ec2-user/hello-20260508-182718
+FSx mounts:
+Filesystem                                                               Size  Used Avail Use% Mounted on
+fs-0a0200993c4e47c69.fsx.ap-northeast-2.amazonaws.com:/fsx/fsxz_scratch  128G     0  128G   0% /fsxz/scratch
+fs-0a0200993c4e47c69.fsx.ap-northeast-2.amazonaws.com:/fsx/fsxz_tools     64G     0   64G   0% /fsxz/tools
+fs-0a0200993c4e47c69.fsx.ap-northeast-2.amazonaws.com:/fsx/fsxz_work     128G     0  128G   0% /fsxz/work
+
+=== CPU info ===
+CPU(s):              128
+Thread(s) per core:  2
+Core(s) per socket:  64
+Socket(s):           1
+Model name:          Intel(R) Xeon(R) 6975P-C
+NUMA node0 CPU(s):   0-31,64-95
+
+=== Simple parallel work (calculate pi via bash) ===
+pi  ≈ 3.1415925536
+err = 1.00e-07
+elapsed 2.53s
+
+=== Done ===

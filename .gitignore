@@ -1,0 +1,36 @@
+# ── Config files ──────────────────────────────
+# 민감 정보(실제 VPC/Subnet ID 등)가 담기므로 환경별 파일은 무시.
+# 기본 템플릿(default.env, example.env)은 커밋 대상.
+config/*.env
+!config/default.env
+!config/example.env
+
+# ── Python ────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# ── CDK ───────────────────────────────────────
+# cdk.context.json은 boto3로 조회한 account/VPC 메타데이터가 들어가 민감.
+# cdk.out/은 합성 결과(CFN template) 캐시.
+# outputs.json은 CfnOutput 값(VPC/subnet/SG/keypair ID 등).
+**/cdk.out/
+**/cdk.context.json
+**/cdk.context.json.bak.*
+**/outputs.json
+
+# ── pcluster ──────────────────────────────────
+cdk/pcluster-config.yaml
+
+# ── SSH keys ──────────────────────────────────
+*.pem
+
+# ── Internal notes (local only) ───────────────
+/internal/
+
+# ── Misc ──────────────────────────────────────
+.DS_Store
+*.swp
+*.bak
