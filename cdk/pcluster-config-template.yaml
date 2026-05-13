@@ -1,0 +1,142 @@
+# ParallelCluster Configuration — Day 1 (v3.0)
+#
+# r8i.32xlarge × 2, single queue, LoginNodes Count=1
+#
+# setup.sh / setup-from-cloudshell.sh가 placeholder 치환 및
+# #OPENZFS_BEGIN / #OPENZFS_END, #ONTAP_BEGIN / #ONTAP_END 블록을
+# 옵션에 따라 활성/비활성 처리함.
+#
+# Placeholder는 CDK 스택 이름과 무관한 중립 키 (${BASE.*}, ${STORAGE.*})를 쓰고,
+# setup.sh가 실제 스택 이름(STACK_PREFIX 기반)에서 값을 읽어 치환한다.
+#
+# SSH KeyPair private key:
+#   aws ssm get-parameter --name /ec2/keypair/<KeyPairId> --with-decryption
+
+Region: ap-northeast-2
+
+Image:
+  Os: rhel8
+
+HeadNode:
+  InstanceType: m7i.xlarge
+  Ssh:
+    KeyName: ${BASE.KeyPairName}
+  Networking:
+    SubnetId: ${BASE.PrimarySubnetId}
+    AdditionalSecurityGroups:
+      - ${BASE.SgClusterNodesId}
+  #SSM_BEGIN
+  #Iam:
+  #  AdditionalIamPolicies:
+  #    - Policy: arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+  #SSM_END
+  LocalStorage:
+    RootVolume:
+      VolumeType: gp3
+      Size: 500
+      Iops: 6000
+      Throughput: 250
+
+#LOGINNODES_BEGIN
+# ParallelCluster 3.15+: LoginNodes는 KeyName 지원 안 함.
+# Login Node 접속 방법은 2가지:
+#   1) HeadNode의 ~ec2-user/.ssh/authorized_keys를 FSx 공유 경로에 복사하여
+#      Login Node bootstrap에서 읽어오는 커스텀 스크립트 (OnNodeConfigured)
+#   2) AWS Directory Service(AD/SSSD) 연동으로 사용자 계정 중앙 관리
+# 당장 접속이 필요하면 HeadNode로 들어가서 작업 (동일 KeyPair 사용).
+LoginNodes:
+  Pools:
+    - Name: users
+      Count: 1
+      InstanceType: r7i.2xlarge
+      Networking:
+        SubnetIds:
+          - ${BASE.PrimarySubnetId}
+        AdditionalSecurityGroups:
+          - ${BASE.SgClusterNodesId}
+#LOGINNODES_END
+
+SharedStorage:
+  #OPENZFS_BEGIN
+  - Name: fsxz-tools
+    StorageType: FsxOpenZfs
+    MountDir: /fsxz/tools
+    FsxOpenZfsSettings:
+      VolumeId: ${STORAGE.VolToolsId}
+
+  - Name: fsxz-work
+    StorageType: FsxOpenZfs
+    MountDir: /fsxz/work
+    FsxOpenZfsSettings:
+      VolumeId: ${STORAGE.VolWorkId}
+
+  - Name: fsxz-scratch
+    StorageType: FsxOpenZfs
+    MountDir: /fsxz/scratch
+    FsxOpenZfsSettings:
+      VolumeId: ${STORAGE.VolScratchId}
+  #OPENZFS_END
+  #ONTAP_BEGIN
+  - Name: fsxn-tools
+    StorageType: FsxOntap
+    MountDir: /fsxn/tools
+    FsxOntapSettings:
+      VolumeId: ${STORAGE.OntapVolToolsId}
+
+  - Name: fsxn-work
+    StorageType: FsxOntap
+    MountDir: /fsxn/work
+    FsxOntapSettings:
+      VolumeId: ${STORAGE.OntapVolWorkId}
+
+  - Name: fsxn-scratch
+    StorageType: FsxOntap
+    MountDir: /fsxn/scratch
+    FsxOntapSettings:
+      VolumeId: ${STORAGE.OntapVolScratchId}
+  #ONTAP_END
+
+Monitoring:
+  Logs:
+    CloudWatch:
+      Enabled: true
+      RetentionInDays: 90
+      DeletionPolicy: Retain
+  Dashboards:
+    CloudWatch:
+      Enabled: true
+
+Scheduling:
+  Scheduler: slurm
+  SlurmSettings:
+    ScaledownIdletime: 15
+    EnableMemoryBasedScheduling: true
+    QueueUpdateStrategy: TERMINATE
+    # 인터넷 없는 subnet 필수 — Route 53은 VPC endpoint 미지원이므로
+    # ParallelCluster 자체 DNS를 끄고 EC2 기본 hostname 사용
+    Dns:
+      DisableManagedDns: true
+      UseEc2Hostnames: true
+
+  SlurmQueues:
+    - Name: eda-r8i
+      CapacityType: ONDEMAND
+      JobExclusiveAllocation: false
+      Networking:
+        SubnetIds:
+          - ${BASE.PrimarySubnetId}
+        AdditionalSecurityGroups:
+          - ${BASE.SgClusterNodesId}
+      ComputeSettings:
+        LocalStorage:
+          RootVolume:
+            VolumeType: gp3
+            Size: 200
+            Iops: 3000
+            Throughput: 125
+      ComputeResources:
+        - Name: r128
+          InstanceType: r8i.32xlarge
+          MinCount: 0
+          MaxCount: 2
+          DisableSimultaneousMultithreading: false
