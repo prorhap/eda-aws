@@ -1,233 +1,247 @@
+[English](./README.md) | [한국어](./README.ko.md)
+
 # EDA on AWS
 
-AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS로
-구성하는 프로젝트입니다. (기본 리전: `ap-northeast-2` — `config/default.env`에서 변경 가능)
+A project for building an EDA (simulation/regression) environment on AWS using
+ParallelCluster + FSx OpenZFS. (Default region: `ap-northeast-2` — configurable
+via `config/default.env`)
 
 ---
 
-## 1. 개요
+## 1. Overview
 
-- **CDK (Python 3.12, aws-cdk-lib 2.x)**: VPC import, 보안그룹, FSx OpenZFS/ONTAP,
-  EDA 라이센스 서버, VPC endpoints, CloudTrail 등을 배포
-- **ParallelCluster 3.15.x**: CDK가 만든 리소스 위에 Slurm head node + compute fleet 배포
-- **VPC**: 기존 VPC/Private subnet을 재사용 (사이트간 VPN 환경 전제)
-- **상세 설계 문서**: [`architecture_guide.md`](architecture_guide.md) /
+- **CDK (Python 3.12, aws-cdk-lib 2.x)**: Deploys VPC import, security groups,
+  FSx OpenZFS/ONTAP, EDA license server, VPC endpoints, CloudTrail, and more
+- **ParallelCluster 3.15.x**: Deploys Slurm head node + compute fleet on top of
+  the resources created by CDK
+- **VPC**: Reuses an existing VPC/private subnet (assumes a site-to-site VPN
+  environment)
+- **Detailed design docs**: [`architecture_guide.md`](architecture_guide.md) /
   [`parallelcluster_guide.md`](parallelcluster_guide.md)
 
-### 배포되는 CloudFormation 스택
+### CloudFormation stacks deployed
 
-스택 이름은 접두사(prefix)에 따라 붙습니다. 기본 `STACK_PREFIX=Eda`.
+Stack names are based on a prefix. Default `STACK_PREFIX=Eda`.
 
-| 스택 | 내용 |
+| Stack | Contents |
 |---|---|
-| `{prefix}Base` | Security Groups (cluster/FSx/ONTAP + VPC endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + 필요 시 elasticloadbalancing/autoscaling) |
-| `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` 볼륨) 또는 FSx ONTAP |
-| `{prefix}LicenseServer` | EDA 라이센스 서버용 EC2 + static ENI (MAC 영속성) |
-| `hpc-cluster` | ParallelCluster (Slurm) 스택 (pcluster CLI가 생성) |
+| `{prefix}Base` | Security Groups (cluster/FSx/ONTAP + VPC endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + elasticloadbalancing/autoscaling when needed) |
+| `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` volumes) or FSx ONTAP |
+| `{prefix}LicenseServer` | EC2 + static ENI for the EDA license server (MAC address persistence) |
+| `hpc-cluster` | ParallelCluster (Slurm) stack (created by the pcluster CLI) |
 
-`STACK_PREFIX`를 다르게 설정하면 같은 계정에 여러 환경 (`EdaDev`, `EdaProd` 등)을
-공존시킬 수 있습니다.
-
----
-
-## 2. 사전 준비
-
-1. AWS 자격증명: `aws configure` (또는 SSO) 로 `ap-northeast-2` 사용 가능 상태
-2. 로컬 도구: `python3`, `node`, `npm`, `jq`
-3. 기존 VPC/Private Subnet: `config/default.env`의 `VPC_ID`, `SUBNET_ID`에 설정
-4. (선택) Private subnet에 0.0.0.0/0 라우트가 없어도 `ENABLE_VPC_ENDPOINTS=1`이면
-   setup.sh가 필요 endpoint를 자동 생성
+By setting `STACK_PREFIX` differently, multiple environments (e.g., `EdaDev`,
+`EdaProd`) can coexist in the same account.
 
 ---
 
-## 3. 배포
+## 2. Prerequisites
+
+1. AWS credentials: `aws configure` (or SSO) with `ap-northeast-2` ready to use
+2. Local tools: `python3`, `node`, `npm`, `jq`
+3. Existing VPC/private subnet: set in `VPC_ID`, `SUBNET_ID` of `config/default.env`
+4. (Optional) Even if the private subnet has no `0.0.0.0/0` route, setup.sh
+   will automatically create the required endpoints when `ENABLE_VPC_ENDPOINTS=1`
+
+---
+
+## 3. Deployment
 
 ```bash
-# 기본 설정(config/default.env) 사용
+# Use the default settings (config/default.env)
 ./setup.sh
 
-# 다른 설정 파일 사용
+# Use a different config file
 CONFIG=config/prod.env ./setup.sh
 
-# 일부 값만 override
+# Override only specific values
 VPC_ID=vpc-xxx SUBNET_ID=subnet-xxx ./setup.sh
 ```
 
-setup.sh 단계:
+setup.sh stages:
 
-1. Pre-validation (AWS 자격증명, 필수 도구, subnet 연결성)
-2. CDK Python deps 설치
-3. pcluster CLI 설치
-4. CDK bootstrap + 스택 배포 (`{prefix}Base` → storage / license 병렬)
-5. `pcluster-config.yaml` 자동 생성 + SSH key 다운로드 (`~/.ssh/*.pem`)
-6. `pcluster create-cluster` 실행 + 완료까지 모니터링 (10–15분)
+1. Pre-validation (AWS credentials, required tools, subnet connectivity)
+2. CDK Python deps installation
+3. pcluster CLI installation
+4. CDK bootstrap + stack deployment (`{prefix}Base` → storage / license in parallel)
+5. Auto-generate `pcluster-config.yaml` + download SSH key (`~/.ssh/*.pem`)
+6. Run `pcluster create-cluster` and monitor until completion (10–15 min)
 
-### 주요 config 플래그 (`config/default.env`)
+### Key config flags (`config/default.env`)
 
-| 변수 | 기본 | 의미 |
+| Variable | Default | Meaning |
 |---|---|---|
-| `REGION` | `ap-northeast-2` | 배포 리전 |
-| `STACK_PREFIX` | `Eda` | CDK 스택 접두사. 같은 계정에 여러 환경 두려면 다르게 설정 |
-| `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
+| `REGION` | `ap-northeast-2` | Deployment region |
+| `STACK_PREFIX` | `Eda` | CDK stack prefix. Use a different value to keep multiple environments in one account |
+| `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
-| `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA 라이센스 서버 |
-| `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장), 0=온프렘 sbatch |
-| `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
-| `ENABLE_SSM` | `0` | Session Manager 접속 허용 |
-| `SKIP_CDK` / `SKIP_CLUSTER` | `0` | 단계 건너뛰기 |
+| `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA license server |
+| `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended), 0=on-prem sbatch |
+| `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
+| `ENABLE_SSM` | `0` | Allow Session Manager access |
+| `SKIP_CDK` / `SKIP_CLUSTER` | `0` | Skip stages |
 
-FSx OpenZFS 자식 볼륨(tools/work/scratch)의 quota/reservation은 부모 용량에 비례해
-자동 스케일링됩니다(부모 용량보다 큰 quota 지정 불가 제약을 회피).
+The quota/reservation of FSx OpenZFS child volumes (tools/work/scratch) is
+auto-scaled in proportion to the parent capacity (to avoid the constraint
+where a quota larger than the parent is not allowed).
 
 ---
 
-## 4. 접속
+## 4. Access
 
-### Login Node (권장)
+### Login Node (recommended)
 
-사용자 일상 작업은 Login Node에서 합니다. ALB DNS로 접속하면 풀에 속한 노드로
-자동 분산됩니다.
+Day-to-day user work happens on the Login Node. Connecting via the ALB DNS
+distributes connections automatically across nodes in the pool.
 
 ```bash
-# Login Node ALB DNS 확인
+# Look up the Login Node ALB DNS
 pcluster describe-cluster --cluster-name <CLUSTER_NAME> --region ap-northeast-2 \
   | jq -r '.loginNodes[0].address'
 
-# 접속 (Head Node와 동일한 pem 키 사용)
+# Connect (uses the same pem key as the Head Node)
 ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_ALB_DNS>
 ```
 
-**Login Node의 KeyPair 작동 방식 (pcluster 3.15+):**
-- `LoginNodes.Pools[].Ssh.KeyName` 파라미터는 pcluster 3.15부터 제거됐습니다.
-- Login Node EC2 자체에는 KeyPair가 붙지 않지만, `/home`이 Head Node에서 NFS로
-  마운트되어 **Head Node의 `~ec2-user/.ssh/authorized_keys`가 그대로 공유**됩니다.
-- 결과적으로 Head Node에 등록된 pem이 Login Node에서도 동일하게 유효합니다.
+**How the Login Node KeyPair works (pcluster 3.15+):**
+- The `LoginNodes.Pools[].Ssh.KeyName` parameter has been removed since pcluster 3.15.
+- The Login Node EC2 itself does not have a KeyPair attached, but `/home` is
+  NFS-mounted from the Head Node, so **the Head Node's
+  `~ec2-user/.ssh/authorized_keys` is shared as-is**.
+- As a result, the pem registered on the Head Node is also valid on the Login Node.
 
-### Head Node (관리용)
+### Head Node (administration)
 
 ```bash
-# 직접 ssh
+# Direct ssh
 ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<HEAD_NODE_IP>
 
-# 또는 pcluster CLI (키 명시 필수, 기본 id_rsa가 맞지 않으면 거부됨)
+# Or pcluster CLI (key must be specified — refuses if default id_rsa doesn't match)
 pcluster ssh --cluster-name <CLUSTER_NAME> --region ap-northeast-2 \
   -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem
 ```
 
-Head Node는 Slurm 컨트롤러가 도는 관리 노드이므로 일상 작업은 Login Node에서
-하는 것을 권장합니다.
+The Head Node is a management node where the Slurm controller runs, so it is
+recommended to do daily work on the Login Node.
 
-### 라이센스 서버
+### License server
 
 ```bash
 ssh -i ~/.ssh/eda-license-key-<ACCOUNT>.pem ec2-user@<LICENSE_IP>
 
-# 클러스터 쪽에서 사용할 환경변수
+# Environment variable to use on the cluster side
 export LM_LICENSE_FILE=27000@<LICENSE_IP>
 ```
 
-License Host ID는 `pcluster-config.yaml` 생성 시 setup.sh가 출력하는
-License Server MAC address를 사용합니다.
+For the License Host ID, use the License Server MAC address printed by
+setup.sh when generating `pcluster-config.yaml`.
 
-**SSH 22 포트 정책**: License 서버 SG는 Head Node와 동일하게 `0.0.0.0/0`에서
-22번을 허용합니다. Private subnet이므로 인터넷에서 도달 불가, VPN 경유
-사내망에서만 접속 가능합니다.
+**SSH port 22 policy**: The License server SG, like the Head Node, allows port
+22 from `0.0.0.0/0`. Since it is in a private subnet, it is not reachable from
+the internet — only from the corporate network via VPN.
 
-### 온프렘에서 직접 sbatch (LoginNode 없이)
+### Direct sbatch from on-prem (without LoginNode)
 
-`ENABLE_LOGIN_NODE=0`인 경우 온프렘 클라이언트가 직접 head node에 sbatch를 날립니다.
-아래 조건이 맞아야 합니다:
+If `ENABLE_LOGIN_NODE=0`, the on-prem client submits sbatch jobs directly to
+the head node. The following conditions must be met:
 
-- 동일 Slurm 버전 (RHEL 8 권장)
-- `/etc/munge/munge.key`를 head node에서 복사
-- UID/GID가 클러스터 사용자와 동일
-- VPN 경유로 head node TCP 6817 도달 가능
+- Same Slurm version (RHEL 8 recommended)
+- Copy `/etc/munge/munge.key` from the head node
+- UID/GID identical to cluster users
+- TCP 6817 reachable to the head node via VPN
 
-### SSH 키 관리 주의사항
+### SSH key management notes
 
-- `setup.sh`는 **매번 SSM Parameter Store에서 pem을 재다운로드**합니다 (무조건 덮어쓰기).
-  이는 클러스터 재생성 시 KeyPair가 새로 만들어져 로컬 pem이 stale해지는 것을 방지합니다.
-- 만약 수동으로 pem 관리 중이고 `Permission denied` 에러가 나면, 로컬 pem의 fingerprint와
-  현재 AWS KeyPair fingerprint가 다를 수 있습니다:
+- `setup.sh` **re-downloads the pem from SSM Parameter Store every time**
+  (always overwrites). This prevents the local pem from going stale when the
+  cluster is recreated and a new KeyPair is generated.
+- If you manage the pem manually and get a `Permission denied` error, the
+  fingerprint of the local pem may differ from the current AWS KeyPair
+  fingerprint:
   ```bash
-  # AWS 쪽 fingerprint
+  # AWS-side fingerprint
   aws ec2 describe-key-pairs --region ap-northeast-2 \
     --key-names eda-cluster-key-<ACCOUNT> --query 'KeyPairs[0].KeyFingerprint'
-  # 로컬 pem fingerprint (RSA는 md5 방식)
+  # Local pem fingerprint (RSA uses md5)
   openssl pkcs8 -in ~/.ssh/eda-cluster-key-<ACCOUNT>.pem -nocrypt -topk8 -outform DER \
     | openssl sha1 -c
   ```
-  두 값이 다르면 pem을 지우고 setup.sh를 다시 실행하세요.
+  If the two values differ, delete the pem and re-run setup.sh.
 
 ---
 
-## 5. 데이터 업로드 (rsync over SSH)
+## 5. Data upload (rsync over SSH)
 
-RTL·testbench·프로젝트 파일은 별도 S3 없이 **`rsync` over SSH**로 로컬
-워크스테이션에서 FSx(`/fsxz/...`)에 바로 올립니다. 추가 인프라·버킷 불필요하고
-보안적으로도 안전합니다 (아래 설명).
+RTL, testbench, and project files are uploaded directly from your local
+workstation to FSx (`/fsxz/...`) via **`rsync` over SSH**, without a separate
+S3. No additional infrastructure or buckets are required, and it is also
+secure (see below).
 
-### 5.1 기본 사용법
+### 5.1 Basic usage
 
 ```bash
-# 로컬 → login/head node → FSx work 볼륨
+# Local → login/head node → FSx work volume
 rsync -az --delete --progress \
   -e "ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem" \
   ./my-rtl-project/ \
   ec2-user@<HEAD_OR_LOGIN_NODE>:/fsxz/work/<user>/my-rtl-project/
 
-# 반대로 결과 회수
+# Or pull results back
 rsync -az --progress \
   -e "ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem" \
   ec2-user@<HEAD_OR_LOGIN_NODE>:/fsxz/work/<user>/my-rtl-project/results/ \
   ./results/
 ```
 
-주요 옵션:
-- `-a` (archive): 퍼미션/타임스탬프/심볼릭 링크 보존
-- `-z`: 전송 중 압축 (느린 회선에서 효과적)
-- `--delete`: 로컬에서 지운 파일을 원격에서도 삭제 (완전 미러링 원할 때)
-- `--progress`: 진행률 표시
-- `--exclude='*.o' --exclude='build/'`: 필요 없는 파일 제외
+Key options:
+- `-a` (archive): preserve permissions/timestamps/symlinks
+- `-z`: compress in transit (effective on slow links)
+- `--delete`: delete files on the remote that were removed locally (full mirror)
+- `--progress`: show progress
+- `--exclude='*.o' --exclude='build/'`: exclude unneeded files
 
-### 5.2 보안적으로 안전한가?
+### 5.2 Is it secure?
 
-**안전합니다.** 이유:
+**Yes.** Reasons:
 
-1. **전송 구간 암호화** — rsync가 `-e ssh`로 SSH 터널을 타고 가므로 모든
-   트래픽이 TLS 수준 암호화(보통 AES-256-GCM 또는 ChaCha20-Poly1305).
-   평문 `rsync://` 프로토콜과 다름.
-2. **네트워크 경로가 private** — 현재 VPC는 private subnet + VPN 구성이라
-   인터넷 노출 없음. 로컬 ↔ VPN ↔ AWS VPC ↔ head/login node 전부 사설 경로.
-3. **인증** — EC2 KeyPair의 private key (`~/.ssh/eda-cluster-key-*.pem`)로만
-   접속 가능. 해당 pem 파일은 `~/.ssh` 안에 `chmod 400`으로 저장됨.
-   SSM Parameter Store에서도 KMS 암호화되어 보관.
-4. **저장 시 암호화** — FSx OpenZFS는 기본적으로 KMS로 at-rest 암호화
-   (`EdaStorage` 스택의 `OpenZfsKey`). 디스크 물리적 탈취 시나리오에도 안전.
-5. **감사 로그** — SSH 접속 시도는 VPC Flow Logs + CloudTrail + head/login node
-   `/var/log/secure`에 기록됨.
+1. **Encrypted in transit** — rsync rides an SSH tunnel via `-e ssh`, so all
+   traffic is TLS-grade encrypted (typically AES-256-GCM or
+   ChaCha20-Poly1305). Different from the plaintext `rsync://` protocol.
+2. **Private network path** — the current VPC is configured with a private
+   subnet + VPN, so there is no internet exposure. local ↔ VPN ↔ AWS VPC ↔
+   head/login node — all on private paths.
+3. **Authentication** — only accessible with the EC2 KeyPair private key
+   (`~/.ssh/eda-cluster-key-*.pem`). The pem file is stored under `~/.ssh`
+   with `chmod 400`. It is also stored KMS-encrypted in SSM Parameter Store.
+4. **Encryption at rest** — FSx OpenZFS is encrypted at rest with KMS by
+   default (`OpenZfsKey` in the `EdaStorage` stack). Safe even in a physical
+   disk theft scenario.
+5. **Audit logs** — SSH login attempts are recorded in VPC Flow Logs +
+   CloudTrail + the head/login node `/var/log/secure`.
 
-**주의할 점:**
-- pem 키 파일 관리 — Git에 커밋 금지 (`.gitignore`에 `*.pem` 포함됨), 다른 사람과
-  공유 금지. 분실 시 즉시 해당 KeyPair 삭제하고 클러스터 재배포 필요.
-- 로컬 SSH config에 `StrictHostKeyChecking=no`를 상시 설정하지 말 것
-  (MITM 방어 약화). 최초 접속 시만 `accept-new`로 호스트키 등록.
+**Caveats:**
+- Manage the pem key carefully — do not commit to Git (`*.pem` is in
+  `.gitignore`); do not share with others. If lost, immediately delete the
+  KeyPair and redeploy the cluster.
+- Don't permanently set `StrictHostKeyChecking=no` in your local SSH config
+  (it weakens MITM defense). Use `accept-new` only on first connection to
+  register the host key.
 
-### 5.3 대용량 / 반복 업로드 팁
+### 5.3 Tips for large / repeated uploads
 
 ```bash
-# 드라이런 (뭐가 전송될지 미리 확인)
+# Dry run (preview what will be transferred)
 rsync -az --dry-run --itemize-changes ...
 
-# 대역폭 제한 (회선 부하 방지, 예: 10 MB/s)
+# Bandwidth limit (avoid saturating the link, e.g., 10 MB/s)
 rsync -az --bwlimit=10000 ...
 
-# .gitignore 패턴 재사용 (git이 추적하지 않는 파일 전송 제외)
+# Reuse .gitignore patterns (skip files git doesn't track)
 rsync -az --exclude-from=.gitignore ...
 
-# ssh master connection 재사용으로 속도 개선
-# ~/.ssh/config 에 아래 추가:
+# Speed up by reusing an SSH master connection
+# Add to ~/.ssh/config:
 #   Host 10.0.*.*
 #     ControlMaster auto
 #     ControlPath ~/.ssh/cm-%r@%h:%p
@@ -236,55 +250,59 @@ rsync -az --exclude-from=.gitignore ...
 
 ---
 
-## 6. 삭제
+## 6. Teardown
 
 ```bash
-# 1. 클러스터
+# 1. Cluster
 pcluster delete-cluster --cluster-name hpc-cluster --region ap-northeast-2
 
-# 2. CDK 스택 (FSx/CloudTrail/KMS는 RemovalPolicy.RETAIN — 수동 삭제 필요)
+# 2. CDK stacks (FSx/CloudTrail/KMS use RemovalPolicy.RETAIN — manual deletion required)
 cd cdk
 cdk destroy --all -c eda:vpc_id=$VPC_ID -c eda:subnet_id=$SUBNET_ID
 ```
 
-FSx 파일시스템, CloudTrail S3 버킷, KMS 키는 실수 방지를 위해 retain 설정이라
-필요하면 콘솔 / CLI에서 별도 삭제합니다.
+The FSx file system, CloudTrail S3 bucket, and KMS keys are set to retain to
+prevent accidental loss, so delete them via the console / CLI separately if
+needed.
 
 ---
 
-## 7. 재배포 시 유의사항
+## 7. Notes for redeployment
 
-- `{prefix}Base` 스택의 VPC endpoint 로직은 **이미 존재하는 endpoint**를 자동으로
-  skip하지만, 이 스택이 `Project=eda-cluster` 태그로 만든 endpoint는 skip 대상에서
-  제외합니다. (태그 없이 skip하면 재배포 시 템플릿에서 빠져 삭제되어 HeadNode
-  부트스트랩이 실패하기 때문)
-- `cdk.context.json`이 다른 VPC를 캐시하고 있으면 setup.sh가 자동으로 백업 후 삭제합니다.
-- 구버전(`EdaNetwork`, `EdaVpcEndpoints` 두 스택 구조)에서 올라오는 경우, 기존 스택을
-  먼저 `cdk destroy` 또는 콘솔에서 삭제한 뒤 새로 배포하세요 (새 구조는 `{prefix}Base`
-  하나로 통합).
+- The VPC endpoint logic in the `{prefix}Base` stack automatically skips
+  **already-existing endpoints**, but excludes endpoints created by this
+  stack (tagged `Project=eda-cluster`) from skipping. (If skipped without
+  the tag, the endpoint would be missing from the template on redeploy and
+  get deleted, causing the HeadNode bootstrap to fail.)
+- If `cdk.context.json` caches a different VPC, setup.sh automatically backs
+  it up and deletes it.
+- When migrating from an older version (the two-stack structure of
+  `EdaNetwork`, `EdaVpcEndpoints`), first `cdk destroy` the existing stacks
+  or delete them from the console, then deploy fresh (the new structure
+  consolidates them into a single `{prefix}Base`).
 
 ---
 
-## 8. 디렉터리 구조
+## 8. Directory structure
 
 ```
 eda-aws/
-├── setup.sh                    # 로컬 원클릭 배포 스크립트
-├── setup-from-cloudshell.sh    # CloudShell용 배포 스크립트
-├── create-cluster.sh           # 클러스터만 재생성할 때
+├── setup.sh                    # Local one-click deploy script
+├── setup-from-cloudshell.sh    # Deploy script for CloudShell
+├── create-cluster.sh           # Recreate the cluster only
 ├── config/
-│   ├── default.env             # 기본 설정
-│   └── example.env             # 예시
-├── cdk/                        # CDK Python 프로젝트
+│   ├── default.env             # Default settings
+│   └── example.env             # Example
+├── cdk/                        # CDK Python project
 │   ├── app.py
-│   ├── cdk/                    # 스택 모듈
+│   ├── cdk/                    # Stack modules
 │   │   ├── base_stack.py            # {prefix}Base: SG + KeyPair + CloudTrail + VPC endpoints
 │   │   ├── storage_stack.py         # {prefix}Storage: FSx OpenZFS / ONTAP
-│   │   ├── license_server_stack.py  # {prefix}LicenseServer: EDA 라이선스 서버
-│   │   └── slurm_db_stack.py        # (미사용 옵션) Slurm accounting RDS
+│   │   ├── license_server_stack.py  # {prefix}LicenseServer: EDA license server
+│   │   └── slurm_db_stack.py        # (unused option) Slurm accounting RDS
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
-├── cdk-dcv/                    # (선택) DCV 관련 CDK
-├── architecture_guide.md       # 전체 아키텍처 설계
-└── parallelcluster_guide.md    # ParallelCluster 실전 가이드
+├── cdk-dcv/                    # (Optional) DCV-related CDK
+├── architecture_guide.md       # Overall architecture design
+└── parallelcluster_guide.md    # Practical ParallelCluster guide
 ```
