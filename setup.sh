@@ -22,7 +22,7 @@
 #   2) Config file (CONFIG=... or config/default.env)
 #   3) In-script fallback default (${VAR:-default})
 #
-# Environment variables (자세한 설명은 config/default.env 참고):
+# Environment variables (see config/default.env for full descriptions):
 #   VPC_ID                    (required) Existing VPC ID (e.g. vpc-xxxxxxxx)
 #   SUBNET_ID                 (required) Existing private subnet ID (e.g. subnet-xxxxxxxx)
 #                             If not set, falls back to cdk.json (eda:vpc_id / eda:subnet_id)
@@ -31,7 +31,7 @@
 #   SKIP_CLUSTER              Set to 1 to skip cluster creation (only generate config file)
 #   SKIP_CONNECTIVITY_CHECK   Set to 1 to bypass subnet 0.0.0.0/0 route + VPC endpoint check
 #   ENABLE_SSM                Set to 1 to enable SSM Session Manager access (default: 0)
-#   STACK_PREFIX              CDK 스택 접두사 (default: Eda) — {prefix}Base, {prefix}Storage, {prefix}LicenseServer
+#   STACK_PREFIX              CDK stack prefix (default: Eda) — {prefix}Base, {prefix}Storage, {prefix}LicenseServer
 #
 #   ── Storage options ──────────────────────────────────────────────────
 #   ENABLE_OPENZFS            1 to create FSx OpenZFS (default: 1)
@@ -64,12 +64,12 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CDK_DIR="${PROJECT_DIR}/cdk"
 
 # ── Config file loading ─────────────────────────────────────
-# 우선순위: env > CONFIG 파일 > in-script default
-# env로 이미 설정된 변수는 config로 덮어쓰지 않도록, source 전에 스냅샷을 떠서 복원한다.
-# (bash 3.2 호환 — associative array 대신 개별 변수 사용)
+# Priority: env > config file > in-script default
+# Snapshot env-set vars before sourcing the config so they are not overwritten.
+# (bash 3.2 compatible — uses individual variables instead of associative arrays)
 CONFIG_FILE="${CONFIG:-${PROJECT_DIR}/config/default.env}"
 if [[ -f "${CONFIG_FILE}" ]]; then
-  # source 전 스냅샷: 값 자체와 "환경에 존재했는지" 여부를 __BAK_<var> / __SET_<var> 에 저장
+  # Pre-source snapshot: store value and "was set in env" flag in __BAK_<var> / __SET_<var>
   _CONFIG_KEYS=$(grep -E '^[A-Z_][A-Z0-9_]*=' "${CONFIG_FILE}" | cut -d= -f1 | sort -u)
   for _k in ${_CONFIG_KEYS}; do
     if [[ -n "${!_k+x}" ]]; then
@@ -85,7 +85,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   source "${CONFIG_FILE}"
   set +a
 
-  # env에 원래 있던 값 복원 (env 우선)
+  # Restore env-original values (env takes precedence)
   for _k in ${_CONFIG_KEYS}; do
     _was_set="$(eval echo \"\${__SET_${_k}}\")"
     if [[ "${_was_set}" == "1" ]]; then
@@ -97,7 +97,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   unset _CONFIG_KEYS _k _was_set
 fi
 
-# ── Defaults (config/env 어느 쪽에도 없을 때의 최종 fallback) ──
+# ── Defaults (final fallback when neither config nor env provided a value) ──
 REGION="${REGION:-ap-northeast-2}"
 CLUSTER_NAME="${CLUSTER_NAME:-hpc-cluster}"
 STACK_PREFIX="${STACK_PREFIX:-Eda}"
@@ -136,7 +136,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/nu
 CURRENT_REGION=$(aws configure get region 2>/dev/null || echo "not-set")
 info "Account: ${ACCOUNT_ID}, Region: ${CURRENT_REGION}"
 
-# boto3는 AWS_REGION을 AWS_DEFAULT_REGION보다 먼저 참조 — 둘 다 세팅
+# boto3 checks AWS_REGION before AWS_DEFAULT_REGION — set both
 export AWS_REGION="${REGION}"
 export AWS_DEFAULT_REGION="${REGION}"
 if [[ "${CURRENT_REGION}" != "${REGION}" ]]; then
@@ -245,10 +245,10 @@ else
     --route-table-ids "${ROUTE_TABLE_ID}" \
     --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`] | length(@)' --output text 2>/dev/null || echo "0")
 
-  # ParallelCluster 공식 가이드 기준
+  # Per ParallelCluster official guide:
   # https://docs.aws.amazon.com/parallelcluster/latest/ug/aws-parallelcluster-in-a-single-public-subnet-no-internet-v3.html
-  # 필수: logs, cloudformation, ec2 (Interface) + s3, dynamodb (Gateway)
-  # 조건부: elasticloadbalancing, autoscaling → LoginNodes 사용 시에만 필수
+  # Required: logs, cloudformation, ec2 (Interface) + s3, dynamodb (Gateway)
+  # Conditional: elasticloadbalancing, autoscaling — required only when LoginNodes is enabled
   REQUIRED_VPCE=(
     "com.amazonaws.${REGION}.logs"
     "com.amazonaws.${REGION}.cloudformation"
@@ -309,7 +309,7 @@ else
   info "Stack prefix: ${STACK_PREFIX} → ${BASE_STACK}, ${STORAGE_STACK}, ${LICENSE_STACK}"
 
   info "CDK bootstrap..."
-  # bootstrap도 app synth를 내부적으로 수행하므로 동일한 context 전달 필요
+  # bootstrap runs app synth internally, so the same context must be passed
   cdk bootstrap "aws://${ACCOUNT_ID}/${REGION}" \
     -c "eda:vpc_id=${VPC_ID}" \
     -c "eda:subnet_id=${SUBNET_ID}" \
@@ -395,7 +395,7 @@ sed \
   -e "s|\${STORAGE.OntapVolScratchId}|${ONTAP_SCRATCH}|g" \
   "${TEMPLATE}" > "${CONFIG}"
 
-# OpenZFS / ONTAP block toggling (marker 기반)
+# OpenZFS / ONTAP block toggling (marker-based)
 if [[ "${ENABLE_OPENZFS:-1}" == "1" ]]; then
   info "OpenZFS SharedStorage block: kept"
   sed -i.bak -e '/^  #OPENZFS_BEGIN$/d' -e '/^  #OPENZFS_END$/d' "${CONFIG}"
@@ -460,7 +460,7 @@ fi
 
 info "ParallelCluster configuration file generated: ${CONFIG}"
 
-# Cluster SSH Private Key download (무조건 재다운로드 — KeyPair 재생성 시 stale 방지)
+# Cluster SSH private key download (always re-download to avoid stale key when KeyPair is recreated)
 SSH_KEY_FILE="${HOME}/.ssh/${KEY_PAIR_NAME}.pem"
 info "Downloading cluster SSH private key from SSM Parameter Store..."
 mkdir -p "${HOME}/.ssh"
@@ -495,7 +495,7 @@ if [[ "${ENABLE_LICENSE_SERVER:-1}" == "1" ]]; then
   chmod 400 "${LIC_KEY_FILE}"
   info "License server SSH key saved: ${LIC_KEY_FILE}"
 
-  # MAC address (license Host ID)는 describe-network-interfaces로 조회
+  # MAC address (license Host ID) is fetched via describe-network-interfaces
   LIC_MAC=$(aws ec2 describe-network-interfaces \
     --network-interface-ids "${LIC_ENI}" \
     --region "${REGION}" \

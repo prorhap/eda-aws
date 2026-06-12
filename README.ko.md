@@ -13,8 +13,8 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
   EDA 라이센스 서버, VPC endpoints, CloudTrail 등을 배포
 - **ParallelCluster 3.15.x**: CDK가 만든 리소스 위에 Slurm head node + compute fleet 배포
 - **VPC**: 기존 VPC/Private subnet을 재사용 (사이트간 VPN 환경 전제)
-- **상세 설계 문서**: [`architecture_guide.md`](architecture_guide.md) /
-  [`parallelcluster_guide.md`](parallelcluster_guide.md)
+- **상세 설계 문서**: [`architecture_guide.md`](architecture_guide.ko.md) /
+  [`parallel_cluster_configuration.md`](parallel_cluster_configuration.ko.md)
 
 ### 배포되는 CloudFormation 스택
 
@@ -34,11 +34,103 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 
 ## 2. 사전 준비
 
-1. AWS 자격증명: `aws configure` (또는 SSO) 로 `ap-northeast-2` 사용 가능 상태
-2. 로컬 도구: `python3`, `node`, `npm`, `jq`
-3. 기존 VPC/Private Subnet: `config/default.env`의 `VPC_ID`, `SUBNET_ID`에 설정
-4. (선택) Private subnet에 0.0.0.0/0 라우트가 없어도 `ENABLE_VPC_ENDPOINTS=1`이면
-   setup.sh가 필요 endpoint를 자동 생성
+### 2.1 AWS 자격증명
+
+```bash
+# 자격증명 설정
+aws configure       # 또는: aws sso login (IAM Identity Center)
+
+# 계정/리전 확인
+aws sts get-caller-identity
+aws configure get region   # ap-northeast-2 이어야 함
+
+# 리전이 다르면 설정
+aws configure set region ap-northeast-2
+```
+
+### 2.2 필수 도구 설치
+
+아래 도구들은 `setup.sh` 실행 **전** 설치되어 있어야 합니다.
+CDK CLI와 pcluster CLI는 `setup.sh`가 자동 설치합니다.
+
+**AWS CLI v2**
+
+```bash
+# macOS
+brew install awscli
+
+# Linux (x86_64)
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip awscliv2.zip && sudo ./aws/install
+
+# Windows — https://awscli.amazonaws.com/AWSCLIV2.msi
+
+aws --version
+```
+
+**python3** (3.9 이상)
+
+```bash
+# macOS
+brew install python@3.12
+
+# Linux — Debian/Ubuntu
+sudo apt-get install -y python3 python3-pip python3-venv
+
+# Linux — RHEL/Amazon Linux
+sudo yum install -y python3
+
+python3 --version
+```
+
+**Node.js + npm** (CDK CLI에 필요, CDK CLI 자체는 setup.sh가 자동 설치)
+
+```bash
+# macOS / Linux — https://nodejs.org/ 에서 LTS 설치 또는 nvm 사용
+node --version
+npm --version
+```
+
+**jq**
+
+```bash
+# macOS
+brew install jq
+
+# Linux — Debian/Ubuntu
+sudo apt-get install -y jq
+
+# Linux — RHEL/Amazon Linux
+sudo yum install -y jq
+```
+
+**SSM Session Manager Plugin** — `ENABLE_SSM=1` 사용 시에만 필요
+
+```bash
+# macOS
+brew install --cask session-manager-plugin
+
+# Linux — Debian/Ubuntu (x86_64)
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+  -o session-manager-plugin.deb
+sudo dpkg -i session-manager-plugin.deb
+
+# Linux — RHEL/Amazon Linux (x86_64)
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/64bit/session-manager-plugin.rpm" \
+  -o session-manager-plugin.rpm
+sudo yum install -y session-manager-plugin.rpm
+```
+
+### 2.3 VPC / Subnet
+
+기존 VPC와 프라이빗 서브넷 ID를 `config/default.env`에 설정하거나, 환경변수로 전달합니다:
+
+```bash
+VPC_ID=vpc-xxx SUBNET_ID=subnet-xxx ./setup.sh
+```
+
+프라이빗 서브넷에 `0.0.0.0/0` 라우트가 없어도 `ENABLE_VPC_ENDPOINTS=1`(기본값)이면
+`setup.sh`가 필요한 VPC 엔드포인트를 자동으로 생성합니다.
 
 ---
 
@@ -74,7 +166,7 @@ setup.sh 단계:
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA 라이센스 서버 |
-| `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장), 0=온프렘 sbatch |
+| `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장) |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
 | `ENABLE_SSM` | `0` | Session Manager 접속 허용 |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | 단계 건너뛰기 |
@@ -86,7 +178,7 @@ FSx OpenZFS 자식 볼륨(tools/work/scratch)의 quota/reservation은 부모 용
 
 ## 4. 접속
 
-### Login Node (권장)
+### Login Node 
 
 사용자 일상 작업은 Login Node에서 합니다. ALB DNS로 접속하면 풀에 속한 노드로
 자동 분산됩니다.
@@ -106,7 +198,7 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_ALB_DNS>
   마운트되어 **Head Node의 `~ec2-user/.ssh/authorized_keys`가 그대로 공유**됩니다.
 - 결과적으로 Head Node에 등록된 pem이 Login Node에서도 동일하게 유효합니다.
 
-### Head Node (관리용)
+### Head Node 
 
 ```bash
 # 직접 ssh
@@ -136,15 +228,6 @@ License Server MAC address를 사용합니다.
 22번을 허용합니다. Private subnet이므로 인터넷에서 도달 불가, VPN 경유
 사내망에서만 접속 가능합니다.
 
-### 온프렘에서 직접 sbatch (LoginNode 없이)
-
-`ENABLE_LOGIN_NODE=0`인 경우 온프렘 클라이언트가 직접 head node에 sbatch를 날립니다.
-아래 조건이 맞아야 합니다:
-
-- 동일 Slurm 버전 (RHEL 8 권장)
-- `/etc/munge/munge.key`를 head node에서 복사
-- UID/GID가 클러스터 사용자와 동일
-- VPN 경유로 head node TCP 6817 도달 가능
 
 ### SSH 키 관리 주의사항
 
@@ -288,5 +371,5 @@ eda-aws/
 │   └── requirements.txt
 ├── cdk-dcv/                    # (선택) DCV 관련 CDK
 ├── architecture_guide.md       # 전체 아키텍처 설계
-└── parallelcluster_guide.md    # ParallelCluster 실전 가이드
+└── parallel_cluster_configuration.md   # ParallelCluster 환경 구성 및 설정 가이드
 ```

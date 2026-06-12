@@ -17,7 +17,7 @@ via `config/default.env`)
 - **VPC**: Reuses an existing VPC/private subnet (assumes a site-to-site VPN
   environment)
 - **Detailed design docs**: [`architecture_guide.md`](architecture_guide.md) /
-  [`parallelcluster_guide.md`](parallelcluster_guide.md)
+  [`parallel_cluster_configuration.md`](parallel_cluster_configuration.md)
 
 ### CloudFormation stacks deployed
 
@@ -37,11 +37,103 @@ By setting `STACK_PREFIX` differently, multiple environments (e.g., `EdaDev`,
 
 ## 2. Prerequisites
 
-1. AWS credentials: `aws configure` (or SSO) with `ap-northeast-2` ready to use
-2. Local tools: `python3`, `node`, `npm`, `jq`
-3. Existing VPC/private subnet: set in `VPC_ID`, `SUBNET_ID` of `config/default.env`
-4. (Optional) Even if the private subnet has no `0.0.0.0/0` route, setup.sh
-   will automatically create the required endpoints when `ENABLE_VPC_ENDPOINTS=1`
+### 2.1 AWS credentials
+
+```bash
+# Configure credentials
+aws configure       # or: aws sso login (IAM Identity Center)
+
+# Verify account and region
+aws sts get-caller-identity
+aws configure get region   # must show ap-northeast-2
+
+# If region is wrong, set it
+aws configure set region ap-northeast-2
+```
+
+### 2.2 Install required tools
+
+The following must be installed **before** running `setup.sh`.
+The CDK CLI and pcluster CLI are installed automatically by `setup.sh`.
+
+**AWS CLI v2**
+
+```bash
+# macOS
+brew install awscli
+
+# Linux (x86_64)
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip awscliv2.zip && sudo ./aws/install
+
+# Windows — https://awscli.amazonaws.com/AWSCLIV2.msi
+
+aws --version
+```
+
+**python3** (3.9 or later)
+
+```bash
+# macOS
+brew install python@3.12
+
+# Linux — Debian/Ubuntu
+sudo apt-get install -y python3 python3-pip python3-venv
+
+# Linux — RHEL/Amazon Linux
+sudo yum install -y python3
+
+python3 --version
+```
+
+**Node.js + npm** (required for CDK CLI, which setup.sh installs automatically)
+
+```bash
+# macOS / Linux — install LTS from https://nodejs.org/ or via nvm
+node --version
+npm --version
+```
+
+**jq**
+
+```bash
+# macOS
+brew install jq
+
+# Linux — Debian/Ubuntu
+sudo apt-get install -y jq
+
+# Linux — RHEL/Amazon Linux
+sudo yum install -y jq
+```
+
+**SSM Session Manager Plugin** — only required when using `ENABLE_SSM=1`
+
+```bash
+# macOS
+brew install --cask session-manager-plugin
+
+# Linux — Debian/Ubuntu (x86_64)
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+  -o session-manager-plugin.deb
+sudo dpkg -i session-manager-plugin.deb
+
+# Linux — RHEL/Amazon Linux (x86_64)
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/64bit/session-manager-plugin.rpm" \
+  -o session-manager-plugin.rpm
+sudo yum install -y session-manager-plugin.rpm
+```
+
+### 2.3 VPC / Subnet
+
+Set your existing VPC and private subnet IDs in `config/default.env`, or pass them as environment variables:
+
+```bash
+VPC_ID=vpc-xxx SUBNET_ID=subnet-xxx ./setup.sh
+```
+
+Even if the private subnet has no `0.0.0.0/0` route, `setup.sh` automatically
+creates the required VPC endpoints when `ENABLE_VPC_ENDPOINTS=1` (the default).
 
 ---
 
@@ -77,7 +169,7 @@ setup.sh stages:
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA license server |
-| `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended), 0=on-prem sbatch |
+| `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended) |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
 | `ENABLE_SSM` | `0` | Allow Session Manager access |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | Skip stages |
@@ -140,16 +232,6 @@ setup.sh when generating `pcluster-config.yaml`.
 **SSH port 22 policy**: The License server SG, like the Head Node, allows port
 22 from `0.0.0.0/0`. Since it is in a private subnet, it is not reachable from
 the internet — only from the corporate network via VPN.
-
-### Direct sbatch from on-prem (without LoginNode)
-
-If `ENABLE_LOGIN_NODE=0`, the on-prem client submits sbatch jobs directly to
-the head node. The following conditions must be met:
-
-- Same Slurm version (RHEL 8 recommended)
-- Copy `/etc/munge/munge.key` from the head node
-- UID/GID identical to cluster users
-- TCP 6817 reachable to the head node via VPN
 
 ### SSH key management notes
 
@@ -304,5 +386,5 @@ eda-aws/
 │   └── requirements.txt
 ├── cdk-dcv/                    # (Optional) DCV-related CDK
 ├── architecture_guide.md       # Overall architecture design
-└── parallelcluster_guide.md    # Practical ParallelCluster guide
+└── parallel_cluster_configuration.md   # ParallelCluster environment and configuration guide
 ```

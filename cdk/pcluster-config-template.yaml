@@ -2,12 +2,11 @@
 #
 # r8i.32xlarge × 2, single queue, LoginNodes Count=1
 #
-# setup.sh / setup-from-cloudshell.sh가 placeholder 치환 및
-# #OPENZFS_BEGIN / #OPENZFS_END, #ONTAP_BEGIN / #ONTAP_END 블록을
-# 옵션에 따라 활성/비활성 처리함.
+# setup.sh substitutes placeholders and activates/strips
+# #OPENZFS_BEGIN/#OPENZFS_END and #ONTAP_BEGIN/#ONTAP_END blocks based on config flags.
 #
-# Placeholder는 CDK 스택 이름과 무관한 중립 키 (${BASE.*}, ${STORAGE.*})를 쓰고,
-# setup.sh가 실제 스택 이름(STACK_PREFIX 기반)에서 값을 읽어 치환한다.
+# Placeholders use stack-prefix-neutral keys (${BASE.*}, ${STORAGE.*}).
+# setup.sh reads actual values from the stack names derived from STACK_PREFIX.
 #
 # SSH KeyPair private key:
 #   aws ssm get-parameter --name /ec2/keypair/<KeyPairId> --with-decryption
@@ -38,12 +37,12 @@ HeadNode:
       Throughput: 250
 
 #LOGINNODES_BEGIN
-# ParallelCluster 3.15+: LoginNodes는 KeyName 지원 안 함.
-# Login Node 접속 방법은 2가지:
-#   1) HeadNode의 ~ec2-user/.ssh/authorized_keys를 FSx 공유 경로에 복사하여
-#      Login Node bootstrap에서 읽어오는 커스텀 스크립트 (OnNodeConfigured)
-#   2) AWS Directory Service(AD/SSSD) 연동으로 사용자 계정 중앙 관리
-# 당장 접속이 필요하면 HeadNode로 들어가서 작업 (동일 KeyPair 사용).
+# ParallelCluster 3.15+: LoginNodes no longer supports KeyName.
+# Two options for Login Node access:
+#   1) Custom OnNodeConfigured script that copies HeadNode's
+#      ~ec2-user/.ssh/authorized_keys from a shared FSx path
+#   2) AWS Directory Service (AD/SSSD) integration for centralized user accounts
+# For immediate access, use the HeadNode directly (same KeyPair).
 LoginNodes:
   Pools:
     - Name: users
@@ -112,8 +111,8 @@ Scheduling:
     ScaledownIdletime: 15
     EnableMemoryBasedScheduling: true
     QueueUpdateStrategy: TERMINATE
-    # 인터넷 없는 subnet 필수 — Route 53은 VPC endpoint 미지원이므로
-    # ParallelCluster 자체 DNS를 끄고 EC2 기본 hostname 사용
+    # Required for internet-less subnets — Route 53 has no VPC endpoint,
+    # so ParallelCluster's managed DNS is disabled and EC2 hostnames are used instead
     Dns:
       DisableManagedDns: true
       UseEc2Hostnames: true
