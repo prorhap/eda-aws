@@ -42,11 +42,16 @@ aws configure       # 또는: aws sso login (IAM Identity Center)
 
 # 계정/리전 확인
 aws sts get-caller-identity
-aws configure get region   # ap-northeast-2 이어야 함
+aws configure get region   # config/default.env의 REGION과 같아야 함
 
 # 리전이 다르면 설정
 aws configure set region ap-northeast-2
 ```
+
+배포 자격증명은 기존 네트워크와 스택 상태를 조회할 수 있어야 합니다. 사전검사에는
+스택 배포 권한 외에 `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
+`ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
+`ec2:DescribeSecurityGroups`, `cloudformation:ListStackResources`가 필요합니다.
 
 ### 2.2 필수 도구 설치
 
@@ -339,10 +344,14 @@ FSx 파일시스템, CloudTrail S3 버킷, KMS 키는 실수 방지를 위해 re
 
 ## 7. 재배포 시 유의사항
 
-- `{prefix}Base` 스택의 VPC endpoint 로직은 **이미 존재하는 endpoint**를 자동으로
-  skip하지만, 이 스택이 `Project=eda-cluster` 태그로 만든 endpoint는 skip 대상에서
-  제외합니다. (태그 없이 skip하면 재배포 시 템플릿에서 빠져 삭제되어 HeadNode
-  부트스트랩이 실패하기 때문)
+- `{prefix}Base` 스택의 VPC endpoint 로직은 재사용 가능한 **기존 endpoint**를
+  자동으로 skip합니다. 현재 스택 소유 여부는 태그가 아니라 CloudFormation
+  Physical ID로 판별하므로 구버전 또는 다른 prefix 스택의 endpoint를 재생성하지
+  않습니다.
+- 재사용할 Interface endpoint는 available 상태, Private DNS 활성화, 선택 subnet
+  CIDR의 HTTPS 허용이 필요합니다. Gateway endpoint는 선택 subnet의 route table에
+  연결되어 있어야 합니다.
+- 선택한 단일 subnet의 AZ가 새로 생성할 모든 Interface endpoint를 지원해야 합니다.
 - `cdk.context.json`이 다른 VPC를 캐시하고 있으면 setup.sh가 자동으로 백업 후 삭제합니다.
 - 구버전(`EdaNetwork`, `EdaVpcEndpoints` 두 스택 구조)에서 올라오는 경우, 기존 스택을
   먼저 `cdk destroy` 또는 콘솔에서 삭제한 뒤 새로 배포하세요 (새 구조는 `{prefix}Base`

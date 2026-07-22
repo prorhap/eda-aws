@@ -20,7 +20,11 @@
   - eda:enable_login_node      (default: true) — ELB/ASG endpoint 생성 여부
 """
 
+from collections import defaultdict
+from ipaddress import ip_network
+
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 from aws_cdk import (
     Stack,
@@ -60,12 +64,19 @@ class BaseStack(Stack):
                 "Set them in cdk.json or pass via `-c eda:vpc_id=... -c eda:subnet_id=...`"
             )
 
-        # subnet의 AZ는 boto3로 조회 (synth 시점). 결과는 cdk.context.json에 캐시.
-        subnet_az = self.node.try_get_context(f"eda:subnet_az:{subnet_id}")
-        if not subnet_az:
-            ec2_client = boto3.client("ec2", region_name=Stack.of(self).region)
+        # Endpoint AZ/SG/route validation에도 사용하므로 subnet 정보를 fail-closed로 조회.
+        ec2_client = boto3.client("ec2", region_name=Stack.of(self).region)
+        try:
             resp = ec2_client.describe_subnets(SubnetIds=[subnet_id])
-            subnet_az = resp["Subnets"][0]["AvailabilityZone"]
+            subnet = resp["Subnets"][0]
+            subnet_az = subnet["AvailabilityZone"]
+            self.primary_subnet_cidr = subnet["CidrBlock"]
+        except (BotoCoreError, ClientError, IndexError, KeyError) as exc:
+            raise RuntimeError(
+                f"Unable to inspect subnet {subnet_id} in {Stack.of(self).region}: {exc}"
+            ) from exc
+
+        self.primary_route_table_id = self._lookup_route_table(vpc_id, subnet_id)
 
         self.vpc = ec2.Vpc.from_lookup(self, "EdaVpc", vpc_id=vpc_id)
 
@@ -73,6 +84,7 @@ class BaseStack(Stack):
             self, "EdaPrimarySubnet",
             subnet_id=subnet_id,
             availability_zone=subnet_az,
+            route_table_id=self.primary_route_table_id,
         )
 
         # ── Security Groups ──────────────────────────────────
@@ -252,23 +264,12 @@ class BaseStack(Stack):
         vpc = self.vpc
         primary_subnet = self.primary_subnet
 
-        # 기존 endpoint 조회 (중복 생성 방지).
-        # 단, 이 스택이 이전에 생성한 endpoint (Project=eda-cluster 태그)는
-        # "기존"으로 간주하지 않는다. 그래야 재배포 시에도 CFN 템플릿에
-        # 계속 포함되어 삭제되지 않음.
-        try:
-            ec2_client = boto3.client("ec2", region_name=region)
-            existing = ec2_client.describe_vpc_endpoints(
-                Filters=[{"Name": "vpc-id", "Values": [vpc.vpc_id]}]
-            )
-            existing_services = set()
-            for ep in existing.get("VpcEndpoints", []):
-                tags = {t["Key"]: t["Value"] for t in ep.get("Tags", [])}
-                if tags.get("Project") == "eda-cluster":
-                    continue  # 우리가 만든 것 → 재생성 대상
-                existing_services.add(ep["ServiceName"])
-        except Exception:
-            existing_services = set()
+        ec2_client = boto3.client("ec2", region_name=region)
+        managed_endpoint_ids = self._lookup_managed_vpc_endpoint_ids()
+        endpoints = self._lookup_vpc_endpoints(ec2_client, vpc.vpc_id)
+        managed_by_service, external_by_service = self._partition_endpoints_by_owner(
+            endpoints, managed_endpoint_ids
+        )
 
         def _svc_name(short: str) -> str:
             return f"com.amazonaws.{region}.{short}"
@@ -281,9 +282,9 @@ class BaseStack(Stack):
             allow_all_outbound=True,
         )
         self.sg_vpce.add_ingress_rule(
-            ec2.Peer.ipv4(vpc.vpc_cidr_block),
+            ec2.Peer.ipv4(self.primary_subnet_cidr),
             ec2.Port.tcp(443),
-            "HTTPS from VPC",
+            "HTTPS from primary subnet",
         )
 
         # Interface endpoints
@@ -296,9 +297,30 @@ class BaseStack(Stack):
         skipped_interface = []
         for short in interface_services:
             full = _svc_name(short)
-            if full in existing_services:
+            if managed_by_service[full]:
+                self._validate_managed_interface_endpoint(
+                    full, managed_by_service[full]
+                )
+                if not any(
+                    primary_subnet.subnet_id in endpoint.get("SubnetIds", [])
+                    for endpoint in managed_by_service[full]
+                ):
+                    self._validate_service_supports_az(
+                        ec2_client, full, primary_subnet.availability_zone
+                    )
+            elif external_by_service[full]:
+                self._validate_external_interface_endpoint(
+                    ec2_client,
+                    full,
+                    external_by_service[full],
+                    self.primary_subnet_cidr,
+                )
                 skipped_interface.append(short)
                 continue
+            else:
+                self._validate_service_supports_az(
+                    ec2_client, full, primary_subnet.availability_zone
+                )
             ep = ec2.CfnVPCEndpoint(
                 self, f"IfcEp{short.capitalize()}",
                 vpc_id=vpc.vpc_id,
@@ -312,24 +334,28 @@ class BaseStack(Stack):
             created_interface.append(short)
 
         # Gateway endpoints (S3, DynamoDB) — route table에 바인딩
-        subnet_rtb_id = self._lookup_route_table(vpc.vpc_id, primary_subnet.subnet_id)
-
         created_gateway = []
         skipped_gateway = []
         for short in GATEWAY_ALWAYS:
             full = _svc_name(short)
-            if full in existing_services:
+            if managed_by_service[full]:
+                self._validate_managed_gateway_endpoint(
+                    full, managed_by_service[full]
+                )
+            elif external_by_service[full]:
+                self._validate_external_gateway_endpoint(
+                    full,
+                    external_by_service[full],
+                    self.primary_route_table_id,
+                )
                 skipped_gateway.append(short)
-                continue
-            if not subnet_rtb_id:
-                skipped_gateway.append(f"{short} (route table not resolvable)")
                 continue
             ep = ec2.CfnVPCEndpoint(
                 self, f"GwEp{short.capitalize()}",
                 vpc_id=vpc.vpc_id,
                 service_name=full,
                 vpc_endpoint_type="Gateway",
-                route_table_ids=[subnet_rtb_id],
+                route_table_ids=[self.primary_route_table_id],
             )
             Tags.of(ep).add("Name", f"eda-vpce-{short}")
             created_gateway.append(short)
@@ -361,10 +387,247 @@ class BaseStack(Stack):
             return val
         return str(val).strip().lower() in ("1", "true", "yes", "on")
 
-    def _lookup_route_table(self, vpc_id: str, subnet_id: str) -> str | None:
-        """Subnet의 explicit RT를 찾고, 없으면 VPC main RT로 fallback."""
+    def _lookup_managed_vpc_endpoint_ids(self) -> set[str]:
+        """Return endpoint physical IDs owned by this exact CloudFormation stack."""
+        client = boto3.client(
+            "cloudformation", region_name=Stack.of(self).region
+        )
+        return self._collect_managed_vpc_endpoint_ids(client, self.stack_name)
+
+    @staticmethod
+    def _collect_managed_vpc_endpoint_ids(client, stack_name: str) -> set[str]:
         try:
-            ec2_client = boto3.client("ec2", region_name=Stack.of(self).region)
+            endpoint_ids = set()
+            paginator = client.get_paginator("list_stack_resources")
+            for page in paginator.paginate(StackName=stack_name):
+                for resource in page.get("StackResourceSummaries", []):
+                    if resource.get("ResourceType") == "AWS::EC2::VPCEndpoint":
+                        physical_id = resource.get("PhysicalResourceId")
+                        if physical_id:
+                            endpoint_ids.add(physical_id)
+            return endpoint_ids
+        except ClientError as exc:
+            error = exc.response.get("Error", {})
+            if (
+                error.get("Code") == "ValidationError"
+                and "does not exist" in error.get("Message", "")
+            ):
+                return set()
+            raise RuntimeError(
+                f"Unable to inspect CloudFormation ownership for {stack_name}: {exc}"
+            ) from exc
+        except BotoCoreError as exc:
+            raise RuntimeError(
+                f"Unable to inspect CloudFormation ownership for {stack_name}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _lookup_vpc_endpoints(client, vpc_id: str) -> list[dict]:
+        try:
+            endpoints = []
+            paginator = client.get_paginator("describe_vpc_endpoints")
+            for page in paginator.paginate(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            ):
+                endpoints.extend(page.get("VpcEndpoints", []))
+            return endpoints
+        except (BotoCoreError, ClientError) as exc:
+            raise RuntimeError(
+                f"Unable to inspect existing VPC endpoints in {vpc_id}: {exc}. "
+                "The deployment principal requires ec2:DescribeVpcEndpoints."
+            ) from exc
+
+    @staticmethod
+    def _partition_endpoints_by_owner(
+        endpoints: list[dict], managed_endpoint_ids: set[str]
+    ) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
+        managed_by_service = defaultdict(list)
+        external_by_service = defaultdict(list)
+        for endpoint in endpoints:
+            target = (
+                managed_by_service
+                if endpoint["VpcEndpointId"] in managed_endpoint_ids
+                else external_by_service
+            )
+            target[endpoint["ServiceName"]].append(endpoint)
+        return managed_by_service, external_by_service
+
+    @staticmethod
+    def _validate_service_supports_az(
+        client, service_name: str, availability_zone: str
+    ) -> None:
+        try:
+            response = client.describe_vpc_endpoint_services(
+                ServiceNames=[service_name]
+            )
+            details = response.get("ServiceDetails", [])
+            supported_azs = details[0].get("AvailabilityZones", []) if details else []
+        except (BotoCoreError, ClientError) as exc:
+            raise RuntimeError(
+                f"Unable to validate Availability Zone support for {service_name}: "
+                f"{exc}. The deployment principal requires "
+                "ec2:DescribeVpcEndpointServices."
+            ) from exc
+
+        if availability_zone not in supported_azs:
+            supported = ", ".join(sorted(supported_azs)) or "none"
+            raise ValueError(
+                f"VPC endpoint service {service_name} does not support the selected "
+                f"single-subnet Availability Zone {availability_zone}. Supported AZs: "
+                f"{supported}. Choose a SUBNET_ID in a supported AZ or disable the "
+                "feature that requires this endpoint."
+            )
+
+    @staticmethod
+    def _validate_managed_interface_endpoint(
+        service_name: str, endpoints: list[dict]
+    ) -> None:
+        if any(
+            endpoint.get("State") == "available"
+            and endpoint.get("VpcEndpointType") == "Interface"
+            and endpoint.get("PrivateDnsEnabled") is True
+            for endpoint in endpoints
+        ):
+            return
+        raise ValueError(
+            f"CloudFormation-managed endpoint for {service_name} is not an available "
+            "Interface endpoint with PrivateDnsEnabled=true. Resolve the endpoint or "
+            "stack state before redeploying."
+        )
+
+    @staticmethod
+    def _validate_managed_gateway_endpoint(
+        service_name: str, endpoints: list[dict]
+    ) -> None:
+        if any(
+            endpoint.get("State") == "available"
+            and endpoint.get("VpcEndpointType") == "Gateway"
+            for endpoint in endpoints
+        ):
+            return
+        raise ValueError(
+            f"CloudFormation-managed endpoint for {service_name} is not an available "
+            "Gateway endpoint. Resolve the endpoint or stack state before redeploying."
+        )
+
+    @classmethod
+    def _validate_external_interface_endpoint(
+        cls,
+        client,
+        service_name: str,
+        endpoints: list[dict],
+        source_cidr: str,
+    ) -> None:
+        available = [
+            endpoint
+            for endpoint in endpoints
+            if endpoint.get("State") == "available"
+            and endpoint.get("VpcEndpointType") == "Interface"
+            and endpoint.get("PrivateDnsEnabled") is True
+        ]
+        if not available:
+            details = ", ".join(
+                f"{ep.get('VpcEndpointId')} state={ep.get('State')} "
+                f"type={ep.get('VpcEndpointType')} "
+                f"privateDns={ep.get('PrivateDnsEnabled')}"
+                for ep in endpoints
+            )
+            raise ValueError(
+                f"Existing endpoint(s) for {service_name} cannot be reused: {details}. "
+                "An available Interface endpoint with PrivateDnsEnabled=true is required."
+            )
+
+        group_ids = sorted({
+            group["GroupId"]
+            for endpoint in available
+            for group in endpoint.get("Groups", [])
+            if group.get("GroupId")
+        })
+        if not group_ids:
+            raise ValueError(
+                f"Existing endpoint(s) for {service_name} have no security groups."
+            )
+
+        try:
+            response = client.describe_security_groups(GroupIds=group_ids)
+        except (BotoCoreError, ClientError) as exc:
+            raise RuntimeError(
+                f"Unable to validate security groups for {service_name}: {exc}. "
+                "The deployment principal requires ec2:DescribeSecurityGroups."
+            ) from exc
+
+        security_groups = {
+            group["GroupId"]: group
+            for group in response.get("SecurityGroups", [])
+        }
+        for endpoint in available:
+            if any(
+                cls._security_group_allows_https_from_cidr(
+                    security_groups.get(group["GroupId"], {}), source_cidr
+                )
+                for group in endpoint.get("Groups", [])
+                if group.get("GroupId")
+            ):
+                return
+
+        raise ValueError(
+            f"Existing endpoint(s) for {service_name} do not allow inbound TCP 443 "
+            f"from the selected subnet CIDR {source_cidr}. Update an endpoint security "
+            "group before deploying."
+        )
+
+    @staticmethod
+    def _security_group_allows_https_from_cidr(
+        security_group: dict, source_cidr: str
+    ) -> bool:
+        source_network = ip_network(source_cidr)
+        for permission in security_group.get("IpPermissions", []):
+            protocol = str(permission.get("IpProtocol"))
+            if protocol != "-1":
+                if protocol not in ("tcp", "6"):
+                    continue
+                from_port = permission.get("FromPort")
+                to_port = permission.get("ToPort")
+                if from_port is None or to_port is None:
+                    continue
+                if not from_port <= 443 <= to_port:
+                    continue
+            for ip_range in permission.get("IpRanges", []):
+                cidr = ip_range.get("CidrIp")
+                if cidr and source_network.subnet_of(ip_network(cidr)):
+                    return True
+        return False
+
+    @staticmethod
+    def _validate_external_gateway_endpoint(
+        service_name: str,
+        endpoints: list[dict],
+        route_table_id: str,
+    ) -> None:
+        for endpoint in endpoints:
+            if (
+                endpoint.get("State") == "available"
+                and endpoint.get("VpcEndpointType") == "Gateway"
+                and route_table_id in endpoint.get("RouteTableIds", [])
+            ):
+                return
+
+        details = ", ".join(
+            f"{ep.get('VpcEndpointId')} state={ep.get('State')} "
+            f"type={ep.get('VpcEndpointType')} "
+            f"routeTables={ep.get('RouteTableIds', [])}"
+            for ep in endpoints
+        )
+        raise ValueError(
+            f"Existing endpoint(s) for {service_name} are not usable by route table "
+            f"{route_table_id}: {details}. Associate that route table with an available "
+            "Gateway endpoint before deploying."
+        )
+
+    def _lookup_route_table(self, vpc_id: str, subnet_id: str) -> str:
+        """Find the subnet's explicit route table, falling back to the VPC main table."""
+        ec2_client = boto3.client("ec2", region_name=Stack.of(self).region)
+        try:
             resp = ec2_client.describe_route_tables(
                 Filters=[{"Name": "association.subnet-id", "Values": [subnet_id]}]
             )
@@ -380,6 +643,12 @@ class BaseStack(Stack):
             rtbs = resp.get("RouteTables", [])
             if rtbs:
                 return rtbs[0]["RouteTableId"]
-        except Exception:
-            pass
-        return None
+        except (BotoCoreError, ClientError) as exc:
+            raise RuntimeError(
+                f"Unable to resolve the route table for subnet {subnet_id}: {exc}. "
+                "The deployment principal requires ec2:DescribeRouteTables."
+            ) from exc
+        raise ValueError(
+            f"No explicit subnet route table or VPC main route table was found for "
+            f"subnet {subnet_id} in VPC {vpc_id}."
+        )

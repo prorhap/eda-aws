@@ -47,9 +47,19 @@ from cdk.license_server_stack import LicenseServerStack
 
 app = cdk.App()
 
+deployment_region = (
+    os.getenv("AWS_REGION")
+    or os.getenv("AWS_DEFAULT_REGION")
+    or os.getenv("CDK_DEFAULT_REGION")
+)
+if not deployment_region:
+    raise ValueError(
+        "Deployment region is required. Set AWS_REGION or AWS_DEFAULT_REGION."
+    )
+
 env = cdk.Environment(
     account=os.getenv("CDK_DEFAULT_ACCOUNT"),
-    region="ap-northeast-2",
+    region=deployment_region,
 )
 
 

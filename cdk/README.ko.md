@@ -93,10 +93,12 @@ Outputs는 `cdk deploy --outputs-file outputs.json` 으로 받고, setup.sh는 �
   `storage_stack.py`는 부모 용량에 비례해 tools≈10% / work≈40% / scratch≈40%로
   스케일링합니다.
 - **VPC endpoint 중복 방지**: `base_stack.py`의 `_create_vpc_endpoints_if_enabled`는
-  synth 시점에 boto3로 기존 endpoint를 조회해 스킵하지만, `Project=eda-cluster`
-  태그가 붙은 것은 우리 스택이 관리하는 것으로 간주해 재생성 대상에 남깁니다.
-  태그를 제외하지 않으면 재배포 시 템플릿에서 빠져 삭제되고 HeadNode 부트스트랩이
-  "Unknown error retrieving HeadNodeLaunchTemplate"로 실패합니다.
+  synth 시점에 boto3로 기존 endpoint를 조회하고 재사용 가능한 외부 endpoint를
+  스킵합니다. 현재 스택 소유 여부는 태그가 아닌 CloudFormation Physical ID로
+  판별하므로 다른 스택의 endpoint를 중복 생성하지 않습니다.
+- **VPC endpoint 검증**: 재사용 endpoint의 상태, 유형, Private DNS, SG의 HTTPS
+  허용, Gateway route table 연결을 확인합니다. 선택한 단일 subnet의 AZ가 새로
+  생성할 각 Interface endpoint를 지원하는지도 synth 전에 검사합니다.
 - **RemovalPolicy.RETAIN**: FSx 파일시스템/볼륨, CloudTrail 버킷·KMS는 데이터 보존을
   위해 retain입니다. 스택 삭제 후 필요시 수동으로 지워야 합니다.
 - **Stack prefix 변경**: `eda:stack_prefix`를 바꾸면 CloudFormation 상에서 **새 스택**

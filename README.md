@@ -45,11 +45,17 @@ aws configure       # or: aws sso login (IAM Identity Center)
 
 # Verify account and region
 aws sts get-caller-identity
-aws configure get region   # must show ap-northeast-2
+aws configure get region   # must match REGION in config/default.env
 
 # If region is wrong, set it
 aws configure set region ap-northeast-2
 ```
+
+The deployment identity must be able to inspect the existing network and stack
+state. Preflight requires `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
+`ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
+`ec2:DescribeSecurityGroups`, and `cloudformation:ListStackResources`, in
+addition to the permissions required to deploy the stacks.
 
 ### 2.2 Install required tools
 
@@ -352,10 +358,14 @@ needed.
 ## 7. Notes for redeployment
 
 - The VPC endpoint logic in the `{prefix}Base` stack automatically skips
-  **already-existing endpoints**, but excludes endpoints created by this
-  stack (tagged `Project=eda-cluster`) from skipping. (If skipped without
-  the tag, the endpoint would be missing from the template on redeploy and
-  get deleted, causing the HeadNode bootstrap to fail.)
+  reusable **already-existing endpoints**. It identifies endpoints owned by
+  the current stack using CloudFormation physical resource IDs, not tags, so
+  endpoints from older or differently prefixed stacks are never recreated.
+- Reused Interface endpoints must be available, have private DNS enabled, and
+  allow HTTPS from the selected subnet CIDR. Reused Gateway endpoints must be
+  available and associated with the selected subnet's route table.
+- The selected single subnet's Availability Zone must support every Interface
+  endpoint that the stack needs to create.
 - If `cdk.context.json` caches a different VPC, setup.sh automatically backs
   it up and deletes it.
 - When migrating from an older version (the two-stack structure of

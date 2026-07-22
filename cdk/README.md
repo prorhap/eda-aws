@@ -98,11 +98,14 @@ injects these values into the neutral placeholders (`${BASE.*}`,
   / work≈40% / scratch≈40% in proportion to the parent capacity.
 - **VPC endpoint dedup**:
   `_create_vpc_endpoints_if_enabled` in `base_stack.py` queries existing
-  endpoints with boto3 at synth time and skips them, but endpoints tagged
-  `Project=eda-cluster` are treated as managed by our stack and are kept
-  in the recreate list. Without this exclusion, on redeploy the endpoint
-  would be removed from the template and the HeadNode bootstrap would fail
-  with "Unknown error retrieving HeadNodeLaunchTemplate".
+  endpoints with boto3 at synth time and skips reusable external endpoints.
+  Endpoint ownership is determined from the current CloudFormation stack's
+  physical resource IDs rather than tags. This keeps stack-managed endpoints
+  in the template without recreating endpoints owned by another stack.
+- **VPC endpoint validation**: Reused endpoints are checked for state, type,
+  private DNS, security-group HTTPS access, and Gateway route-table
+  association. The selected single-subnet AZ is checked against each
+  Interface endpoint service before synthesis.
 - **RemovalPolicy.RETAIN**: FSx file systems/volumes, the CloudTrail bucket,
   and the KMS key retain for data preservation. Delete manually after stack
   deletion if needed.

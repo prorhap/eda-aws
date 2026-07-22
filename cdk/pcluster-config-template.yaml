@@ -11,7 +11,7 @@
 # SSH KeyPair private key:
 #   aws ssm get-parameter --name /ec2/keypair/<KeyPairId> --with-decryption
 
-Region: ap-northeast-2
+Region: ${REGION}
 
 Image:
   Os: rhel8

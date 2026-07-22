@@ -118,6 +118,27 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 step()  { echo -e "\n${CYAN}${BOLD}── $* ──${NC}\n"; }
 
+aws_capture() {
+  local result_var="$1"
+  local description="$2"
+  local output
+  local stderr_file
+  local stderr_output
+  shift 2
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/eda-aws.XXXXXX") \
+    || error "Unable to create a temporary file"
+  if ! output=$("$@" 2>"${stderr_file}"); then
+    stderr_output=$(<"${stderr_file}")
+    rm -f "${stderr_file}"
+    error "${description} failed: ${stderr_output}"
+  fi
+  if [[ -s "${stderr_file}" ]]; then
+    cat "${stderr_file}" >&2
+  fi
+  rm -f "${stderr_file}"
+  printf -v "${result_var}" '%s' "${output}"
+}
+
 SECONDS=0
 elapsed() { echo "$((SECONDS / 60))m $((SECONDS % 60))s"; }
 
@@ -226,24 +247,34 @@ else
   info "VPC endpoints: ENABLE_VPC_ENDPOINTS=${ENABLE_VPC_ENDPOINTS}"
 
   # ── Validate subnet belongs to VPC ──
-  ACTUAL_VPC=$(aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
-    --query 'Subnets[0].VpcId' --output text 2>/dev/null || echo "")
+  aws_capture ACTUAL_VPC "Subnet lookup" \
+    aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
+    --query 'Subnets[0].VpcId' --output text
   [[ "${ACTUAL_VPC}" == "${VPC_ID}" ]] \
     || error "Subnet ${SUBNET_ID} does not belong to VPC ${VPC_ID} (actual: ${ACTUAL_VPC:-not-found})"
+  aws_capture SUBNET_AZ "Subnet Availability Zone lookup" \
+    aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
+    --query 'Subnets[0].AvailabilityZone' --output text
+  info "Single-subnet Availability Zone: ${SUBNET_AZ}"
 
   # ── Validate subnet connectivity (AWS API reachability) ──
-  ROUTE_TABLE_ID=$(aws ec2 describe-route-tables --region "${REGION}" \
+  aws_capture ROUTE_TABLE_ID "Subnet route table lookup" \
+    aws ec2 describe-route-tables --region "${REGION}" \
     --filters "Name=association.subnet-id,Values=${SUBNET_ID}" \
-    --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || echo "")
+    --query 'RouteTables[0].RouteTableId' --output text
   if [[ -z "${ROUTE_TABLE_ID}" || "${ROUTE_TABLE_ID}" == "None" ]]; then
     # fallback to main RT
-    ROUTE_TABLE_ID=$(aws ec2 describe-route-tables --region "${REGION}" \
+    aws_capture ROUTE_TABLE_ID "VPC main route table lookup" \
+      aws ec2 describe-route-tables --region "${REGION}" \
       --filters "Name=vpc-id,Values=${VPC_ID}" "Name=association.main,Values=true" \
-      --query 'RouteTables[0].RouteTableId' --output text 2>/dev/null || echo "")
+      --query 'RouteTables[0].RouteTableId' --output text
   fi
-  HAS_DEFAULT_ROUTE=$(aws ec2 describe-route-tables --region "${REGION}" \
+  [[ -n "${ROUTE_TABLE_ID}" && "${ROUTE_TABLE_ID}" != "None" ]] \
+    || error "No route table found for subnet ${SUBNET_ID}"
+  aws_capture HAS_DEFAULT_ROUTE "Default route lookup" \
+    aws ec2 describe-route-tables --region "${REGION}" \
     --route-table-ids "${ROUTE_TABLE_ID}" \
-    --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`] | length(@)' --output text 2>/dev/null || echo "0")
+    --query 'RouteTables[0].Routes[?DestinationCidrBlock==`0.0.0.0/0`] | length(@)' --output text
 
   # Per ParallelCluster official guide:
   # https://docs.aws.amazon.com/parallelcluster/latest/ug/aws-parallelcluster-in-a-single-public-subnet-no-internet-v3.html
@@ -262,9 +293,10 @@ else
       "com.amazonaws.${REGION}.autoscaling"
     )
   fi
-  EXISTING_VPCE=$(aws ec2 describe-vpc-endpoints --region "${REGION}" \
+  aws_capture EXISTING_VPCE "Existing VPC endpoint lookup" \
+    aws ec2 describe-vpc-endpoints --region "${REGION}" \
     --filters "Name=vpc-id,Values=${VPC_ID}" \
-    --query 'VpcEndpoints[].ServiceName' --output text 2>/dev/null || echo "")
+    --query 'VpcEndpoints[].ServiceName' --output text
 
   MISSING_VPCE=()
   for svc in "${REQUIRED_VPCE[@]}"; do
@@ -272,6 +304,23 @@ else
       MISSING_VPCE+=("${svc}")
     fi
   done
+
+  if [[ "${ENABLE_VPC_ENDPOINTS:-1}" == "1" ]]; then
+    for svc in "${MISSING_VPCE[@]}"; do
+      case "${svc}" in
+        "com.amazonaws.${REGION}.s3"|"com.amazonaws.${REGION}.dynamodb")
+          continue
+          ;;
+      esac
+      aws_capture SUPPORTED_AZS "Endpoint Availability Zone lookup for ${svc}" \
+        aws ec2 describe-vpc-endpoint-services --region "${REGION}" \
+        --service-names "${svc}" \
+        --query 'ServiceDetails[0].AvailabilityZones' --output text
+      if ! echo "${SUPPORTED_AZS}" | tr '\t' '\n' | grep -qx "${SUBNET_AZ}"; then
+        error "Endpoint ${svc} does not support single-subnet AZ ${SUBNET_AZ}. Supported AZs: ${SUPPORTED_AZS:-none}. Choose a SUBNET_ID in a supported AZ or disable the feature that requires this endpoint."
+      fi
+    done
+  fi
 
   if [[ "${HAS_DEFAULT_ROUTE}" == "0" && ${#MISSING_VPCE[@]} -gt 0 ]]; then
     if [[ "${ENABLE_VPC_ENDPOINTS:-1}" == "1" ]]; then
@@ -384,6 +433,7 @@ if [[ "${ENABLE_ONTAP:-0}" == "1" ]]; then
 fi
 
 sed \
+  -e "s|\${REGION}|${REGION}|g" \
   -e "s|\${BASE.PrimarySubnetId}|${SUBNET_ID}|g" \
   -e "s|\${BASE.SgClusterNodesId}|${SG_CLUSTER}|g" \
   -e "s|\${BASE.KeyPairName}|${KEY_PAIR_NAME}|g" \
