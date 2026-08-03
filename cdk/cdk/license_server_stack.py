@@ -97,7 +97,7 @@ class LicenseServerStack(Stack):
         self.sg_license.add_ingress_rule(
             ec2.Peer.ipv4("0.0.0.0/0"),
             ec2.Port.tcp(22),
-            "SSH (private subnet — reachable only via VPN)",
+            "SSH (private subnet - reachable only via VPN)",
         )
         # License manager main + vendor daemon — cluster node에서만
         self.sg_license.add_ingress_rule(

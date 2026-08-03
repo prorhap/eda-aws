@@ -1,3 +1,5 @@
+import string
+
 import aws_cdk as cdk
 import pytest
 from aws_cdk import assertions, aws_ec2 as ec2
@@ -43,7 +45,6 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
             "eda:enable_openzfs": True,
             "eda:enable_ontap": False,
             "eda:openzfs_size_gib": 320,
-            "eda:openzfs_throughput": 1280,
         }
     )
     vpc, subnet, _, fsx_sg, ontap_sg = imported_network(app)
@@ -65,7 +66,7 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
             "StorageCapacity": 320,
             "OpenZFSConfiguration": {
                 "DeploymentType": "SINGLE_AZ_HA_2",
-                "ThroughputCapacity": 1280,
+                "ThroughputCapacity": 2560,
             },
         },
     )
@@ -177,6 +178,31 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
                 }
             ]
         },
+    )
+
+    ingress_descriptions = [
+        resource["Properties"].get("Description", "")
+        for resource in template.find_resources(
+            "AWS::EC2::SecurityGroupIngress"
+        ).values()
+    ]
+    for resource in template.find_resources("AWS::EC2::SecurityGroup").values():
+        ingress_descriptions.extend(
+            rule.get("Description", "")
+            for rule in resource["Properties"].get("SecurityGroupIngress", [])
+        )
+
+    allowed_description_chars = set(
+        string.ascii_letters
+        + string.digits
+        + ". _-:/()#,@[]+=&;{}!$*"
+    )
+    assert ingress_descriptions
+    assert all(
+        description
+        and len(description) < 256
+        and set(description) <= allowed_description_chars
+        for description in ingress_descriptions
     )
 
 

@@ -102,7 +102,7 @@ The simplest and fastest configuration as the Day 1 default storage.
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (gen 2, NVMe L2ARC cache) |
 | Storage capacity | 320 GiB (range: 64 GiB – 512 TiB) |
-| Throughput | 1,280 MBps (allowed: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
+| Throughput | 2,560 MBps (allowed: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
 | SSD IOPS | Automatic (3 IOPS/GiB) |
 | Backup retention | 7 days |
 
@@ -392,7 +392,7 @@ Benefits of keeping the Login Node:
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
 | Capacity | 320 GiB | 10 TiB |
-| Throughput | 1,280 MBps | 3,072 MBps × 1 HA |
+| Throughput | 2,560 MBps | 3,072 MBps × 1 HA |
 
 ---
 
@@ -420,7 +420,7 @@ SUBNET_ID=""       # Existing private subnet ID
 
 ENABLE_OPENZFS=1
 OPENZFS_SIZE_GIB=320
-OPENZFS_THROUGHPUT=1280
+OPENZFS_THROUGHPUT=2560
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -449,7 +449,7 @@ applies.
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster name |
 | `ENABLE_OPENZFS` | `1` | Whether to create FSx OpenZFS |
 | `OPENZFS_SIZE_GIB` | `320` | OpenZFS capacity (64 – 524,288) |
-| `OPENZFS_THROUGHPUT` | `1280` | OpenZFS throughput (9 allowed values) |
+| `OPENZFS_THROUGHPUT` | `2560` | OpenZFS throughput (9 allowed values) |
 | `ENABLE_ONTAP` | `0` | Whether to create FSx ONTAP |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP capacity (1,024 – 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | Throughput per HA pair (1536 / 3072 / 6144) |

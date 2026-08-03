@@ -91,9 +91,9 @@ injects these values into the neutral placeholders (`${BASE.*}`,
 
 ## Implementation notes
 
-- **Non-ASCII not allowed in EC2 description**: The `Description` field of
-  `AWS::EC2::NetworkInterface` accepts ASCII only. Don't use em-dash (`—`)
-  etc.
+- **Non-ASCII not allowed in EC2 rule descriptions**: The `Description` field
+  of `AWS::EC2::SecurityGroupIngress` accepts only the EC2-documented
+  character set. Don't use em-dash (`—`) etc.
 - **FSx OpenZFS child volume quota**: Each child volume's
   `storage_capacity_quota_gib` must be ≤ parent FS capacity, and the total
   reservation must be ≤ parent capacity. `storage_stack.py` scales tools≈10%

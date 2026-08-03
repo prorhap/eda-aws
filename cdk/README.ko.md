@@ -88,8 +88,9 @@ Outputs는 `cdk deploy --outputs-file outputs.json` 으로 받고, setup.sh는 �
 
 ## 구현 노트
 
-- **EC2 description non-ASCII 금지**: `AWS::EC2::NetworkInterface`의 `Description`
-  필드는 ASCII만 허용됩니다. em-dash(`—`) 등을 쓰지 않습니다.
+- **EC2 rule description non-ASCII 금지**: `AWS::EC2::SecurityGroupIngress`의
+  `Description` 필드는 EC2가 문서화한 문자 집합만 허용합니다.
+  em-dash(`—`) 등을 쓰지 않습니다.
 - **FSx OpenZFS 자식 볼륨 quota**: 각 자식 볼륨의 `storage_capacity_quota_gib`는
   부모 FS 용량 이하여야 하고, 전체 reservation 합은 부모 용량 이하여야 합니다.
   `storage_stack.py`는 부모 용량에 비례해 tools≈10% / work≈40% / scratch≈40%로

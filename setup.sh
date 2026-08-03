@@ -37,8 +37,8 @@
 #
 #   ── Storage options ──────────────────────────────────────────────────
 #   ENABLE_OPENZFS            1 to create FSx OpenZFS (default: 1)
-#   OPENZFS_SIZE_GIB          GiB, 64 ~ 524288 (512 TiB) (default: 10240)
-#   OPENZFS_THROUGHPUT        MBps, one of 160|320|640|1280|2560|3840|5120|7680|10240 (default: 2560)
+#   OPENZFS_SIZE_GIB          GiB, 64 ~ 524288 (512 TiB) (default config: 320)
+#   OPENZFS_THROUGHPUT        MBps, one of 160|320|640|1280|2560|3840|5120|7680|10240 (default config: 2560)
 #   ENABLE_ONTAP              1 to create FSx NetApp ONTAP (default: 0)
 #   ONTAP_SIZE_GIB            GiB, 1024 ~ 1048576 (1 PiB) (default: 10240)
 #   ONTAP_TPUT_PER_HA         MBps per HA pair, one of 1536|3072|6144 (default: 3072)
@@ -73,6 +73,8 @@ PCLUSTER_VENV="${PROJECT_DIR}/.pcluster-venv"
 PCLUSTER="${PCLUSTER_VENV}/bin/pcluster"
 PCLUSTER_VERSION_SERIES="3.15"
 CDK_MIN_VERSION="2.1033.0"
+NODE_MIN_VERSION="22.0.0"
+EC2_STANDARD_VCPU_QUOTA_CODE="L-1216C47A"
 
 # ── Config file loading ─────────────────────────────────────
 # Priority: env > config file > in-script default
@@ -304,6 +306,10 @@ if [[ "${SKIP_CDK:-0}" != "1" ]]; then
   for cmd in node npm; do
     command -v "${cmd}" >/dev/null 2>&1 || error "${cmd} is not installed"
   done
+  NODE_VERSION=$(node --version 2>/dev/null | sed 's/^v//')
+  version_at_least "${NODE_VERSION}" "${NODE_MIN_VERSION}" \
+    || error "Node.js ${NODE_MIN_VERSION} or newer is required by current AWS CDK tooling (found: ${NODE_VERSION:-unknown})."
+  info "Node.js: v${NODE_VERSION}"
 fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) \
@@ -412,7 +418,7 @@ else
 
   # ── Cluster topology ──
   if [[ "${ENABLE_LOGIN_NODE}" != "1" ]]; then
-    warn "LoginNodes disabled — on-prem clients must have matching Slurm version, munge.key, and UID."
+    warn "LoginNodes disabled — on-prem clients need matching Slurm, munge.key, UID/GID, and a TCP 6817 ingress rule to the Head Node."
   fi
   info "LoginNodes: ENABLE_LOGIN_NODE=${ENABLE_LOGIN_NODE}"
   info "Login Node DCV: ENABLE_DCV=${ENABLE_DCV}"
@@ -456,7 +462,22 @@ else
     REQUIRED_INSTANCE_TYPES+=("r7i.2xlarge")
   fi
   REQUIRED_INSTANCE_TYPES+=("${LICENSE_INSTANCE_TYPE}")
+  UNIQUE_REQUIRED_INSTANCE_TYPES=()
   for instance_type in "${REQUIRED_INSTANCE_TYPES[@]}"; do
+    instance_type_seen=0
+    if ((${#UNIQUE_REQUIRED_INSTANCE_TYPES[@]} > 0)); then
+      for existing_instance_type in "${UNIQUE_REQUIRED_INSTANCE_TYPES[@]}"; do
+        if [[ "${existing_instance_type}" == "${instance_type}" ]]; then
+          instance_type_seen=1
+          break
+        fi
+      done
+    fi
+    if [[ "${instance_type_seen}" == "0" ]]; then
+      UNIQUE_REQUIRED_INSTANCE_TYPES+=("${instance_type}")
+    fi
+  done
+  for instance_type in "${UNIQUE_REQUIRED_INSTANCE_TYPES[@]}"; do
     aws_capture OFFERING_COUNT "Instance offering lookup for ${instance_type}" \
       aws ec2 describe-instance-type-offerings --region "${REGION}" \
       --location-type availability-zone \
@@ -467,6 +488,57 @@ else
       || error "Instance type ${instance_type} is not offered in ${SUBNET_AZ}. Choose a supported SUBNET_ID or instance type."
   done
   info "Required EC2 instance types are offered in ${SUBNET_AZ}"
+
+  # Standard On-Demand vCPU quota is shared by the M/R families used here.
+  # The deployment baseline is License + Head + optional Login. Compute has
+  # MinCount=0 and contributes only to the configured scale-out ceiling.
+  aws_capture INSTANCE_VCPU_DATA "Instance vCPU lookup" \
+    aws ec2 describe-instance-types --region "${REGION}" \
+    --instance-types "${UNIQUE_REQUIRED_INSTANCE_TYPES[@]}" \
+    --query 'InstanceTypes[].[InstanceType,VCpuInfo.DefaultVCpus]' --output text
+  HEAD_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "m7i.xlarge" {print $2; exit}')
+  COMPUTE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "r8i.32xlarge" {print $2; exit}')
+  LICENSE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk -v type="${LICENSE_INSTANCE_TYPE}" '$1 == type {print $2; exit}')
+  [[ "${HEAD_VCPUS}" =~ ^[0-9]+$ && "${COMPUTE_VCPUS}" =~ ^[0-9]+$ && "${LICENSE_VCPUS}" =~ ^[0-9]+$ ]] \
+    || error "Unable to determine vCPU counts for required instance types."
+
+  STANDARD_BASELINE_VCPUS="${HEAD_VCPUS}"
+  STANDARD_MAX_VCPUS=$((HEAD_VCPUS + COMPUTE_VCPUS * 2))
+  if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
+    LOGIN_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "r7i.2xlarge" {print $2; exit}')
+    [[ "${LOGIN_VCPUS}" =~ ^[0-9]+$ ]] \
+      || error "Unable to determine vCPU count for r7i.2xlarge."
+    STANDARD_BASELINE_VCPUS=$((STANDARD_BASELINE_VCPUS + LOGIN_VCPUS))
+    STANDARD_MAX_VCPUS=$((STANDARD_MAX_VCPUS + LOGIN_VCPUS))
+  fi
+  if [[ "${LICENSE_INSTANCE_TYPE%%.*}" =~ ^[acdhimrtz][0-9] ]]; then
+    STANDARD_BASELINE_VCPUS=$((STANDARD_BASELINE_VCPUS + LICENSE_VCPUS))
+    STANDARD_MAX_VCPUS=$((STANDARD_MAX_VCPUS + LICENSE_VCPUS))
+  else
+    warn "License instance type ${LICENSE_INSTANCE_TYPE} does not use the EC2 Standard On-Demand quota; verify its family-specific quota separately."
+  fi
+
+  if STANDARD_QUOTA_VALUE=$(aws service-quotas get-service-quota \
+      --service-code ec2 \
+      --quota-code "${EC2_STANDARD_VCPU_QUOTA_CODE}" \
+      --region "${REGION}" \
+      --query 'Quota.Value' \
+      --output text 2>/dev/null); then
+    STANDARD_QUOTA_VCPUS="${STANDARD_QUOTA_VALUE%%.*}"
+    if [[ "${STANDARD_QUOTA_VCPUS}" =~ ^[0-9]+$ ]]; then
+      info "EC2 Standard On-Demand vCPU quota: ${STANDARD_QUOTA_VCPUS}; deployment baseline: ${STANDARD_BASELINE_VCPUS}; configured scale-out ceiling: ${STANDARD_MAX_VCPUS}"
+      ((STANDARD_QUOTA_VCPUS >= STANDARD_BASELINE_VCPUS)) \
+        || error "EC2 Standard On-Demand vCPU quota ${STANDARD_QUOTA_VCPUS} is below the deployment baseline ${STANDARD_BASELINE_VCPUS}. Request a quota increase for ${EC2_STANDARD_VCPU_QUOTA_CODE} before retrying."
+      if ((STANDARD_QUOTA_VCPUS < STANDARD_MAX_VCPUS)); then
+        warn "Cluster creation can proceed, but the account quota cannot support Compute MaxCount=2 together with the License, Head, and Login nodes. Request at least ${STANDARD_MAX_VCPUS} vCPUs to use the full configured capacity."
+      fi
+      info "Existing Standard-family instance usage also consumes this regional quota."
+    else
+      warn "Unable to parse EC2 Standard On-Demand vCPU quota value: ${STANDARD_QUOTA_VALUE}"
+    fi
+  else
+    warn "Unable to read EC2 Standard On-Demand vCPU quota. Verify quota ${EC2_STANDARD_VCPU_QUOTA_CODE} manually before cluster creation."
+  fi
 
   # ── Validate subnet connectivity (AWS API reachability) ──
   aws_capture ROUTE_TABLE_ID "Subnet route table lookup" \

@@ -93,7 +93,7 @@ sudo yum install -y python3
 python3 --version
 ```
 
-**Node.js + npm** (CDK CLI에 필요, CDK CLI 자체는 setup.sh가 자동 설치)
+**Node.js 22+ 및 npm** (CDK CLI에 필요, CDK CLI 자체는 setup.sh가 자동 설치)
 
 ```bash
 # macOS / Linux — https://nodejs.org/ 에서 LTS 설치 또는 nvm 사용
@@ -173,7 +173,7 @@ setup.sh 단계:
 | `REGION` | `ap-northeast-2` | 배포 리전 |
 | `STACK_PREFIX` | `Eda` | CDK 스택·물리 리소스·SSM 경로 접두사 |
 | `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `2560` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 필수 EDA 라이센스 서버 인스턴스 |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` 기본값 |
@@ -334,8 +334,9 @@ rsync -az --progress \
    SSM Parameter Store에서도 KMS 암호화되어 보관.
 4. **저장 시 암호화** — FSx OpenZFS는 기본적으로 KMS로 at-rest 암호화
    (`EdaStorage` 스택의 `OpenZfsKey`). 디스크 물리적 탈취 시나리오에도 안전.
-5. **감사 로그** — SSH 접속 시도는 VPC Flow Logs + CloudTrail + head/login node
-   `/var/log/secure`에 기록됨.
+5. **감사 로그** — CloudTrail은 AWS API 활동을 기록하고, head/login node의
+   `/var/log/secure`는 SSH 인증 기록을 남깁니다. 네트워크 흐름 감사가 필요하면
+   VPC Flow Logs를 별도로 활성화해야 합니다.
 
 **주의할 점:**
 - pem 키 파일 관리 — Git에 커밋 금지 (`.gitignore`에 `*.pem` 포함됨), 다른 사람과

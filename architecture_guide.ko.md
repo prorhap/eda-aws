@@ -99,7 +99,7 @@ Day 1 기본 스토리지로 가장 단순하고 빠른 구성입니다.
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (2세대, NVMe L2ARC 캐시) |
 | Storage capacity | 320 GiB (범위: 64 GiB ~ 512 TiB) |
-| Throughput | 1,280 MBps (허용값: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
+| Throughput | 2,560 MBps (허용값: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
 | SSD IOPS | Automatic (3 IOPS/GiB) |
 | Backup retention | 7 days |
 
@@ -374,7 +374,7 @@ Login Node를 유지할 때의 장점:
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
 | Capacity | 320 GiB | 10 TiB |
-| Throughput | 1,280 MBps | 3,072 MBps × 1 HA |
+| Throughput | 2,560 MBps | 3,072 MBps × 1 HA |
 
 ---
 
@@ -401,7 +401,7 @@ SUBNET_ID=""       # 기존 private subnet ID
 
 ENABLE_OPENZFS=1
 OPENZFS_SIZE_GIB=320
-OPENZFS_THROUGHPUT=1280
+OPENZFS_THROUGHPUT=2560
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -429,7 +429,7 @@ ENABLE_VPC_ENDPOINTS=1
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster 이름 |
 | `ENABLE_OPENZFS` | `1` | FSx OpenZFS 생성 여부 |
 | `OPENZFS_SIZE_GIB` | `320` | OpenZFS 용량 (64 ~ 524,288) |
-| `OPENZFS_THROUGHPUT` | `1280` | OpenZFS throughput (9개 허용값) |
+| `OPENZFS_THROUGHPUT` | `2560` | OpenZFS throughput (9개 허용값) |
 | `ENABLE_ONTAP` | `0` | FSx ONTAP 생성 여부 |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP 용량 (1,024 ~ 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | HA pair당 throughput (1536 / 3072 / 6144) |

@@ -98,7 +98,7 @@ sudo yum install -y python3
 python3 --version
 ```
 
-**Node.js + npm** (required for CDK CLI, which setup.sh installs automatically)
+**Node.js 22+ and npm** (required for CDK CLI, which setup.sh installs automatically)
 
 ```bash
 # macOS / Linux — install LTS from https://nodejs.org/ or via nvm
@@ -178,7 +178,7 @@ setup.sh stages:
 | `REGION` | `ap-northeast-2` | Deployment region |
 | `STACK_PREFIX` | `Eda` | Prefix for CDK stacks, physical resources, and SSM paths |
 | `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `2560` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | Mandatory EDA license server instance |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` defaults |
@@ -346,8 +346,9 @@ Key options:
 4. **Encryption at rest** — FSx OpenZFS is encrypted at rest with KMS by
    default (`OpenZfsKey` in the `EdaStorage` stack). Safe even in a physical
    disk theft scenario.
-5. **Audit logs** — SSH login attempts are recorded in VPC Flow Logs +
-   CloudTrail + the head/login node `/var/log/secure`.
+5. **Audit logs** — CloudTrail records AWS API activity, and the head/login node
+   records SSH authentication in `/var/log/secure`. Enable VPC Flow Logs
+   separately when network-flow auditing is required.
 
 **Caveats:**
 - Manage the pem key carefully — do not commit to Git (`*.pem` is in
