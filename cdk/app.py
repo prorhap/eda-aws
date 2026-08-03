@@ -16,6 +16,7 @@ Context flags (cdk -c 또는 cdk.json):
   # Network / endpoints
   eda:enable_vpc_endpoints    bool (default: true)
   eda:enable_login_node       bool (default: true)  — ELB/ASG endpoint 생성 여부에 영향
+  eda:enable_ssm              bool (default: false) — SSM endpoint 생성 여부에 영향
   # Storage
   eda:enable_openzfs          bool (default: true)
   eda:enable_ontap            bool (default: false)

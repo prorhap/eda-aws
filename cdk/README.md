@@ -16,7 +16,7 @@ on the `eda:stack_prefix` (default `Eda`).
 
 | Stack | File | Role | Condition |
 |---|---|---|---|
-| `{prefix}Base` | `cdk/base_stack.py` | VPC import, Security Groups (cluster/FSx/ONTAP + endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + elb/asg as needed) | Always |
+| `{prefix}Base` | `cdk/base_stack.py` | VPC import, Security Groups (cluster/FSx/ONTAP + endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + optional elb/asg or SSM endpoints) | Always |
 | `{prefix}Storage` | `cdk/storage_stack.py` | FSx OpenZFS / FSx NetApp ONTAP + child volumes (tools/work/scratch) + CloudWatch Alarm | `eda:enable_openzfs` or `eda:enable_ontap` |
 | `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EC2 + static ENI for the EDA license server (MAC persistence) | `eda:enable_license_server=true` |
 
@@ -45,6 +45,7 @@ Pass via `cdk -c key=value` or `cdk.json`. setup.sh forwards
 | `eda:subnet_id` | — (required) | str | Private subnet ID |
 | `eda:enable_vpc_endpoints` | `true` | bool | Create VPC endpoints inside the Base stack |
 | `eda:enable_login_node` | `true` | bool | Whether to include ELB/ASG endpoints |
+| `eda:enable_ssm` | `false` | bool | Whether to include SSM/SSM Messages/EC2 Messages endpoints |
 | `eda:enable_openzfs` | `true` | bool | Create FSx OpenZFS |
 | `eda:openzfs_size_gib` | `10240` | int | OpenZFS capacity (64 – 524288) |
 | `eda:openzfs_throughput` | `2560` | int | MBps: 160·320·640·1280·2560·3840·5120·7680·10240 |

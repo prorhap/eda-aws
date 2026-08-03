@@ -56,12 +56,17 @@
 #   ENABLE_VPC_ENDPOINTS      1 to auto-create required VPC endpoints (default: 1)
 #                             Always: logs, cloudformation, ec2, s3, dynamodb
 #                             + elasticloadbalancing, autoscaling when ENABLE_LOGIN_NODE=1
+#                             + ssm, ssmmessages, ec2messages when ENABLE_SSM=1
 #                             Existing endpoints in the VPC are automatically skipped.
 #
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CDK_DIR="${PROJECT_DIR}/cdk"
+PCLUSTER_VENV="${PROJECT_DIR}/.pcluster-venv"
+PCLUSTER="${PCLUSTER_VENV}/bin/pcluster"
+PCLUSTER_VERSION_SERIES="3.15"
+CDK_MIN_VERSION="2.1033.0"
 
 # ── Config file loading ─────────────────────────────────────
 # Priority: env > config file > in-script default
@@ -142,6 +147,67 @@ aws_capture() {
 SECONDS=0
 elapsed() { echo "$((SECONDS / 60))m $((SECONDS % 60))s"; }
 
+version_at_least() {
+  local current="$1"
+  local minimum="$2"
+  local current_part
+  local minimum_part
+  local index
+  local IFS=.
+  local current_parts
+  local minimum_parts
+  read -r -a current_parts <<< "${current}"
+  read -r -a minimum_parts <<< "${minimum}"
+  for index in 0 1 2; do
+    current_part="${current_parts[$index]:-0}"
+    minimum_part="${minimum_parts[$index]:-0}"
+    if ((current_part > minimum_part)); then
+      return 0
+    elif ((current_part < minimum_part)); then
+      return 1
+    fi
+  done
+  return 0
+}
+
+cleanup_failed_stack() {
+  local stack_name="$1"
+  local stack_status="$2"
+
+  if [[ "${stack_status}" == "ROLLBACK_IN_PROGRESS" ]]; then
+    warn "${stack_name} is rolling back; waiting for completion."
+    aws cloudformation wait stack-rollback-complete \
+      --stack-name "${stack_name}" --region "${REGION}" \
+      || error "Failed while waiting for ${stack_name} rollback"
+    stack_status="ROLLBACK_COMPLETE"
+  fi
+
+  if [[ "${stack_status}" == "ROLLBACK_COMPLETE" || "${stack_status}" == "CREATE_FAILED" ]]; then
+    warn "${stack_name} is ${stack_status}; deleting the failed initial stack before retry."
+    aws cloudformation delete-stack \
+      --stack-name "${stack_name}" --region "${REGION}" \
+      || error "Failed to delete ${stack_name}"
+    aws cloudformation wait stack-delete-complete \
+      --stack-name "${stack_name}" --region "${REGION}" \
+      || error "Failed while waiting for ${stack_name} deletion"
+    info "Deleted failed stack ${stack_name}"
+  elif [[ "${stack_status}" == "DELETE_IN_PROGRESS" ]]; then
+    warn "${stack_name} is being deleted; waiting for completion."
+    aws cloudformation wait stack-delete-complete \
+      --stack-name "${stack_name}" --region "${REGION}" \
+      || error "Failed while waiting for ${stack_name} deletion"
+  elif [[ "${stack_status}" == "ROLLBACK_FAILED" || "${stack_status}" == "DELETE_FAILED" ]]; then
+    error "${stack_name} is ${stack_status}. Resolve the CloudFormation stack manually before retrying."
+  fi
+}
+
+validate_binary_flag() {
+  local name="$1"
+  local value="$2"
+  [[ "${value}" == "0" || "${value}" == "1" ]] \
+    || error "${name} must be 0 or 1 (found: ${value})"
+}
+
 # ══════════════════════════════════════════════════════════════
 step "1/6  Environment Validation"
 # ══════════════════════════════════════════════════════════════
@@ -151,6 +217,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
 else
   warn "Config file not found: ${CONFIG_FILE} (using defaults + env only)"
 fi
+
+for cmd in aws python3 node npm jq; do
+  command -v "${cmd}" >/dev/null 2>&1 || error "${cmd} is not installed"
+done
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) \
   || error "Unable to verify AWS credentials. Please run 'aws configure' first"
@@ -164,15 +234,18 @@ if [[ "${CURRENT_REGION}" != "${REGION}" ]]; then
   warn "aws CLI default region is '${CURRENT_REGION}' — overriding to ${REGION} for this session"
 fi
 
-for cmd in python3 node npm jq; do
-  command -v $cmd >/dev/null 2>&1 || error "${cmd} is not installed"
-done
-
 # CDK CLI
-if ! command -v cdk >/dev/null 2>&1; then
-  info "Installing CDK CLI..."
-  npm install -g aws-cdk 2>&1 | tail -1
+CDK_VERSION=""
+if command -v cdk >/dev/null 2>&1; then
+  CDK_VERSION=$(cdk --version 2>/dev/null | awk '{print $1}')
 fi
+if [[ -z "${CDK_VERSION}" ]] || ! version_at_least "${CDK_VERSION}" "${CDK_MIN_VERSION}"; then
+  info "Installing a CDK CLI compatible with aws-cdk-lib 2.232.1..."
+  npm install -g "aws-cdk@^2.1033.0"
+  CDK_VERSION=$(cdk --version 2>/dev/null | awk '{print $1}')
+fi
+version_at_least "${CDK_VERSION}" "${CDK_MIN_VERSION}" \
+  || error "CDK CLI ${CDK_VERSION:-unknown} is older than required ${CDK_MIN_VERSION}"
 info "CDK CLI: $(cdk --version 2>/dev/null | head -1)"
 
 # ══════════════════════════════════════════════════════════════
@@ -193,13 +266,24 @@ info "CDK Python dependencies installed"
 step "3/6  Install pcluster CLI"
 # ══════════════════════════════════════════════════════════════
 
-if command -v pcluster >/dev/null 2>&1; then
-  info "pcluster CLI already installed: $(pcluster version 2>/dev/null)"
-else
-  info "Installing pcluster CLI (takes 1-2 minutes)..."
-  pip install -q "aws-parallelcluster"
-  info "pcluster CLI installed: $(pcluster version 2>/dev/null)"
+if [[ ! -x "${PCLUSTER_VENV}/bin/python" ]]; then
+  info "Creating an isolated pcluster virtual environment..."
+  python3 -m venv "${PCLUSTER_VENV}"
 fi
+INSTALLED_PCLUSTER_VERSION=""
+if [[ -x "${PCLUSTER}" ]]; then
+  INSTALLED_PCLUSTER_VERSION=$("${PCLUSTER}" version 2>/dev/null | jq -r '.version // empty')
+fi
+if [[ "${INSTALLED_PCLUSTER_VERSION}" != "${PCLUSTER_VERSION_SERIES}".* ]]; then
+  info "Installing pcluster ${PCLUSTER_VERSION_SERIES}.x in its isolated virtual environment (takes 1-2 minutes)..."
+  "${PCLUSTER_VENV}/bin/python" -m pip install -q --upgrade pip
+  "${PCLUSTER_VENV}/bin/python" -m pip install -q --upgrade \
+    "aws-parallelcluster~=${PCLUSTER_VERSION_SERIES}.0"
+fi
+INSTALLED_PCLUSTER_VERSION=$("${PCLUSTER}" version 2>/dev/null | jq -r '.version // empty')
+[[ "${INSTALLED_PCLUSTER_VERSION}" == "${PCLUSTER_VERSION_SERIES}".* ]] \
+  || error "pcluster ${PCLUSTER_VERSION_SERIES}.x is required (found: ${INSTALLED_PCLUSTER_VERSION:-unknown})"
+info "pcluster CLI: ${INSTALLED_PCLUSTER_VERSION} (${PCLUSTER})"
 
 # ══════════════════════════════════════════════════════════════
 step "4/6  CDK Bootstrap + Deploy"
@@ -225,6 +309,8 @@ else
   ONTAP_SIZE_GIB="${ONTAP_SIZE_GIB:-10240}"
   ONTAP_TPUT_PER_HA="${ONTAP_TPUT_PER_HA:-3072}"
   ONTAP_HA_PAIRS="${ONTAP_HA_PAIRS:-1}"
+  validate_binary_flag "ENABLE_OPENZFS" "${ENABLE_OPENZFS}"
+  validate_binary_flag "ENABLE_ONTAP" "${ENABLE_ONTAP}"
   if [[ "${ENABLE_OPENZFS}" != "1" && "${ENABLE_ONTAP}" != "1" ]]; then
     warn "Both ENABLE_OPENZFS and ENABLE_ONTAP are 0 — StorageStack will be skipped."
   fi
@@ -233,17 +319,23 @@ else
   # ── License server options ──
   ENABLE_LICENSE_SERVER="${ENABLE_LICENSE_SERVER:-1}"
   LICENSE_INSTANCE_TYPE="${LICENSE_INSTANCE_TYPE:-m7i.large}"
+  validate_binary_flag "ENABLE_LICENSE_SERVER" "${ENABLE_LICENSE_SERVER}"
   info "License server: ENABLE_LICENSE_SERVER=${ENABLE_LICENSE_SERVER} (${LICENSE_INSTANCE_TYPE})"
 
   # ── Cluster topology ──
   ENABLE_LOGIN_NODE="${ENABLE_LOGIN_NODE:-1}"
+  ENABLE_SSM="${ENABLE_SSM:-0}"
+  validate_binary_flag "ENABLE_LOGIN_NODE" "${ENABLE_LOGIN_NODE}"
+  validate_binary_flag "ENABLE_SSM" "${ENABLE_SSM}"
   if [[ "${ENABLE_LOGIN_NODE}" != "1" ]]; then
     warn "LoginNodes disabled — on-prem clients must have matching Slurm version, munge.key, and UID."
   fi
   info "LoginNodes: ENABLE_LOGIN_NODE=${ENABLE_LOGIN_NODE}"
+  info "SSM Session Manager: ENABLE_SSM=${ENABLE_SSM}"
 
   # ── VPC endpoints ──
   ENABLE_VPC_ENDPOINTS="${ENABLE_VPC_ENDPOINTS:-1}"
+  validate_binary_flag "ENABLE_VPC_ENDPOINTS" "${ENABLE_VPC_ENDPOINTS}"
   info "VPC endpoints: ENABLE_VPC_ENDPOINTS=${ENABLE_VPC_ENDPOINTS}"
 
   # ── Validate subnet belongs to VPC ──
@@ -256,6 +348,42 @@ else
     aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
     --query 'Subnets[0].AvailabilityZone' --output text
   info "Single-subnet Availability Zone: ${SUBNET_AZ}"
+  aws_capture AUTO_PUBLIC_IP "Subnet public IPv4 assignment lookup" \
+    aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
+    --query 'Subnets[0].MapPublicIpOnLaunch' --output text
+  [[ "${AUTO_PUBLIC_IP}" == "False" || "${AUTO_PUBLIC_IP}" == "false" ]] \
+    || error "Subnet ${SUBNET_ID} has auto-assign public IPv4 enabled. Disable it before creating an internet-isolated ParallelCluster."
+
+  aws_capture DNS_SUPPORT "VPC DNS support lookup" \
+    aws ec2 describe-vpc-attribute --vpc-id "${VPC_ID}" --region "${REGION}" \
+    --attribute enableDnsSupport --query 'EnableDnsSupport.Value' --output text
+  aws_capture DNS_HOSTNAMES "VPC DNS hostnames lookup" \
+    aws ec2 describe-vpc-attribute --vpc-id "${VPC_ID}" --region "${REGION}" \
+    --attribute enableDnsHostnames --query 'EnableDnsHostnames.Value' --output text
+  [[ "${DNS_SUPPORT}" == "True" || "${DNS_SUPPORT}" == "true" ]] \
+    || error "VPC ${VPC_ID} must have DNS resolution (enableDnsSupport) enabled."
+  [[ "${DNS_HOSTNAMES}" == "True" || "${DNS_HOSTNAMES}" == "true" ]] \
+    || error "VPC ${VPC_ID} must have DNS hostnames (enableDnsHostnames) enabled."
+
+  # ── Validate required EC2 instance types in the selected single AZ ──
+  REQUIRED_INSTANCE_TYPES=("m7i.xlarge" "r8i.32xlarge")
+  if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
+    REQUIRED_INSTANCE_TYPES+=("r7i.2xlarge")
+  fi
+  if [[ "${ENABLE_LICENSE_SERVER}" == "1" ]]; then
+    REQUIRED_INSTANCE_TYPES+=("${LICENSE_INSTANCE_TYPE}")
+  fi
+  for instance_type in "${REQUIRED_INSTANCE_TYPES[@]}"; do
+    aws_capture OFFERING_COUNT "Instance offering lookup for ${instance_type}" \
+      aws ec2 describe-instance-type-offerings --region "${REGION}" \
+      --location-type availability-zone \
+      --filters "Name=location,Values=${SUBNET_AZ}" \
+                "Name=instance-type,Values=${instance_type}" \
+      --query 'length(InstanceTypeOfferings)' --output text
+    [[ "${OFFERING_COUNT}" -gt 0 ]] \
+      || error "Instance type ${instance_type} is not offered in ${SUBNET_AZ}. Choose a supported SUBNET_ID or instance type."
+  done
+  info "Required EC2 instance types are offered in ${SUBNET_AZ}"
 
   # ── Validate subnet connectivity (AWS API reachability) ──
   aws_capture ROUTE_TABLE_ID "Subnet route table lookup" \
@@ -291,6 +419,13 @@ else
     REQUIRED_VPCE+=(
       "com.amazonaws.${REGION}.elasticloadbalancing"
       "com.amazonaws.${REGION}.autoscaling"
+    )
+  fi
+  if [[ "${ENABLE_SSM:-0}" == "1" ]]; then
+    REQUIRED_VPCE+=(
+      "com.amazonaws.${REGION}.ssm"
+      "com.amazonaws.${REGION}.ssmmessages"
+      "com.amazonaws.${REGION}.ec2messages"
     )
   fi
   aws_capture EXISTING_VPCE "Existing VPC endpoint lookup" \
@@ -357,12 +492,47 @@ else
 
   info "Stack prefix: ${STACK_PREFIX} → ${BASE_STACK}, ${STORAGE_STACK}, ${LICENSE_STACK}"
 
+  # bootstrap also synthesizes the app, so it must receive exactly the same
+  # feature context as deploy.
+  CDK_CONTEXT_ARGS=(
+    -c "eda:vpc_id=${VPC_ID}"
+    -c "eda:subnet_id=${SUBNET_ID}"
+    -c "eda:stack_prefix=${STACK_PREFIX}"
+    -c "eda:enable_vpc_endpoints=${ENABLE_VPC_ENDPOINTS}"
+    -c "eda:enable_login_node=${ENABLE_LOGIN_NODE}"
+    -c "eda:enable_ssm=${ENABLE_SSM}"
+    -c "eda:enable_openzfs=${ENABLE_OPENZFS}"
+    -c "eda:enable_ontap=${ENABLE_ONTAP}"
+    -c "eda:openzfs_size_gib=${OPENZFS_SIZE_GIB}"
+    -c "eda:openzfs_throughput=${OPENZFS_THROUGHPUT}"
+    -c "eda:ontap_size_gib=${ONTAP_SIZE_GIB}"
+    -c "eda:ontap_tput_per_ha=${ONTAP_TPUT_PER_HA}"
+    -c "eda:ontap_ha_pairs=${ONTAP_HA_PAIRS}"
+    -c "eda:enable_license_server=${ENABLE_LICENSE_SERVER}"
+    -c "eda:license_instance_type=${LICENSE_INSTANCE_TYPE}"
+  )
+
+  # A stack whose initial create rolled back cannot be updated. Remove only
+  # failed initial-create stacks, children first; never delete a usable stack.
+  aws_capture STACK_SUMMARIES "CloudFormation stack status lookup" \
+    aws cloudformation list-stacks --region "${REGION}" --output json
+  STACK_CLEANUP_ORDER=()
+  if [[ "${ENABLE_LICENSE_SERVER}" == "1" ]]; then
+    STACK_CLEANUP_ORDER+=("${LICENSE_STACK}")
+  fi
+  if [[ "${ENABLE_OPENZFS}" == "1" || "${ENABLE_ONTAP}" == "1" ]]; then
+    STACK_CLEANUP_ORDER+=("${STORAGE_STACK}")
+  fi
+  STACK_CLEANUP_ORDER+=("${BASE_STACK}")
+  for stack_name in "${STACK_CLEANUP_ORDER[@]}"; do
+    stack_status=$(echo "${STACK_SUMMARIES}" | jq -r --arg name "${stack_name}" \
+      '[.StackSummaries[] | select(.StackName == $name and .StackStatus != "DELETE_COMPLETE")][0].StackStatus // empty')
+    cleanup_failed_stack "${stack_name}" "${stack_status}"
+  done
+
   info "CDK bootstrap..."
-  # bootstrap runs app synth internally, so the same context must be passed
   cdk bootstrap "aws://${ACCOUNT_ID}/${REGION}" \
-    -c "eda:vpc_id=${VPC_ID}" \
-    -c "eda:subnet_id=${SUBNET_ID}" \
-    -c "eda:stack_prefix=${STACK_PREFIX}" 2>&1 | tail -1
+    "${CDK_CONTEXT_ARGS[@]}"
 
   info "Starting CDK stack deployment (incremental update)..."
   echo ""
@@ -370,20 +540,7 @@ else
   cdk deploy --all \
     --require-approval never \
     --outputs-file outputs.json \
-    -c "eda:vpc_id=${VPC_ID}" \
-    -c "eda:subnet_id=${SUBNET_ID}" \
-    -c "eda:stack_prefix=${STACK_PREFIX}" \
-    -c "eda:enable_vpc_endpoints=${ENABLE_VPC_ENDPOINTS}" \
-    -c "eda:enable_login_node=${ENABLE_LOGIN_NODE}" \
-    -c "eda:enable_openzfs=${ENABLE_OPENZFS}" \
-    -c "eda:enable_ontap=${ENABLE_ONTAP}" \
-    -c "eda:openzfs_size_gib=${OPENZFS_SIZE_GIB}" \
-    -c "eda:openzfs_throughput=${OPENZFS_THROUGHPUT}" \
-    -c "eda:ontap_size_gib=${ONTAP_SIZE_GIB}" \
-    -c "eda:ontap_tput_per_ha=${ONTAP_TPUT_PER_HA}" \
-    -c "eda:ontap_ha_pairs=${ONTAP_HA_PAIRS}" \
-    -c "eda:enable_license_server=${ENABLE_LICENSE_SERVER}" \
-    -c "eda:license_instance_type=${LICENSE_INSTANCE_TYPE}"
+    "${CDK_CONTEXT_ARGS[@]}"
 
   [[ -f "${CDK_DIR}/outputs.json" ]] || error "CDK deployment failed: outputs.json was not generated"
   info "CDK deployment complete"
@@ -572,7 +729,7 @@ step "6/6  Create ParallelCluster"
 
 # Display existing cluster list
 info "Existing ParallelCluster list:"
-CLUSTER_LIST=$(pcluster list-clusters --region "${REGION}" 2>/dev/null \
+CLUSTER_LIST=$("${PCLUSTER}" list-clusters --region "${REGION}" 2>/dev/null \
   | jq -r '.clusters[] | "  \(.clusterName)  (\(.clusterStatus))"' 2>/dev/null || true)
 if [[ -n "${CLUSTER_LIST}" ]]; then
   echo "${CLUSTER_LIST}"
@@ -585,31 +742,57 @@ if [[ "${SKIP_CLUSTER:-0}" == "1" ]]; then
   warn "SKIP_CLUSTER=1 — Skipping cluster creation"
   echo ""
   info "To create manually:"
-  echo "  pcluster create-cluster --cluster-name ${CLUSTER_NAME} --cluster-configuration ${CONFIG} --region ${REGION}"
+  echo "  ${PCLUSTER} create-cluster --cluster-name ${CLUSTER_NAME} --cluster-configuration ${CONFIG} --region ${REGION}"
   echo ""
   info "Total elapsed time: $(elapsed)"
   exit 0
 fi
 
 # Check if a cluster with the same name already exists
-EXISTING=$(pcluster describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}" 2>/dev/null \
+EXISTING=$("${PCLUSTER}" describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}" 2>/dev/null \
   | jq -r '.clusterStatus // empty' 2>/dev/null || true)
 
 if [[ -n "${EXISTING}" ]]; then
-  warn "Cluster '${CLUSTER_NAME}' already exists (status: ${EXISTING})"
-  echo ""
-  echo "  Create with a different name: CLUSTER_NAME=eda-dev ./setup.sh"
-  echo "  Delete existing cluster: pcluster delete-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
-  echo ""
-  info "Total elapsed time: $(elapsed)"
-  exit 0
+  case "${EXISTING}" in
+    CREATE_FAILED|ROLLBACK_COMPLETE)
+      warn "Cluster '${CLUSTER_NAME}' is ${EXISTING}; deleting the failed initial cluster before retry."
+      "${PCLUSTER}" delete-cluster \
+        --cluster-name "${CLUSTER_NAME}" \
+        --region "${REGION}"
+      aws cloudformation wait stack-delete-complete \
+        --stack-name "${CLUSTER_NAME}" \
+        --region "${REGION}" \
+        || error "Failed while waiting for cluster stack ${CLUSTER_NAME} deletion"
+      info "Deleted failed cluster ${CLUSTER_NAME}"
+      ;;
+    DELETE_IN_PROGRESS)
+      warn "Cluster '${CLUSTER_NAME}' is being deleted; waiting before retry."
+      aws cloudformation wait stack-delete-complete \
+        --stack-name "${CLUSTER_NAME}" \
+        --region "${REGION}" \
+        || error "Failed while waiting for cluster stack ${CLUSTER_NAME} deletion"
+      ;;
+    CREATE_IN_PROGRESS)
+      warn "Cluster '${CLUSTER_NAME}' creation is already in progress; resuming monitoring."
+      ;;
+    CREATE_COMPLETE|UPDATE_COMPLETE)
+      warn "Cluster '${CLUSTER_NAME}' already exists (status: ${EXISTING})"
+      info "Total elapsed time: $(elapsed)"
+      exit 0
+      ;;
+    *)
+      error "Cluster '${CLUSTER_NAME}' already exists in status ${EXISTING}. Resolve it before retrying."
+      ;;
+  esac
 fi
 
-info "Starting ParallelCluster creation: ${CLUSTER_NAME}"
-pcluster create-cluster \
-  --cluster-name "${CLUSTER_NAME}" \
-  --cluster-configuration "${CONFIG}" \
-  --region "${REGION}"
+if [[ "${EXISTING}" != "CREATE_IN_PROGRESS" ]]; then
+  info "Starting ParallelCluster creation: ${CLUSTER_NAME}"
+  "${PCLUSTER}" create-cluster \
+    --cluster-name "${CLUSTER_NAME}" \
+    --cluster-configuration "${CONFIG}" \
+    --region "${REGION}"
+fi
 
 echo ""
 info "Cluster creation started (takes 10-15 minutes)"
@@ -618,7 +801,7 @@ echo ""
 
 # Poll locally until completion
 while true; do
-  STATUS=$(pcluster describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}" \
+  STATUS=$("${PCLUSTER}" describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}" \
     | jq -r '.clusterStatus' 2>/dev/null || echo "UNKNOWN")
   TIMESTAMP=$(date '+%H:%M:%S')
 
@@ -627,7 +810,7 @@ while true; do
       echo ""
       info "Cluster creation complete!"
 
-      CLUSTER_INFO=$(pcluster describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}")
+      CLUSTER_INFO=$("${PCLUSTER}" describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}")
       HEAD_IP=$(echo "${CLUSTER_INFO}" | jq -r '.headNode.privateIpAddress // "N/A"')
       LOGIN_ADDR=$(echo "${CLUSTER_INFO}" | jq -r '.loginNodes[0].address // empty')
 
@@ -651,10 +834,10 @@ while true; do
       fi
       echo ""
       echo "  Head Node access:"
-      echo "    pcluster ssh --cluster-name ${CLUSTER_NAME} --region ${REGION}"
+      echo "    ${PCLUSTER} ssh --cluster-name ${CLUSTER_NAME} --region ${REGION} -i ${SSH_KEY_FILE}"
       echo ""
       echo "  Delete:"
-      echo "    pcluster delete-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
+      echo "    ${PCLUSTER} delete-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
       echo "══════════════════════════════════════════"
       echo ""
       info "Total elapsed time: $(elapsed)"
@@ -663,7 +846,7 @@ while true; do
       ;;
     CREATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_IN_PROGRESS|DELETE_*)
       echo ""
-      error "Cluster creation failed (status: ${STATUS})\n  pcluster describe-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
+      error "Cluster creation failed (status: ${STATUS})\n  ${PCLUSTER} describe-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
       ;;
     *)
       echo -ne "\r  [${TIMESTAMP}] Status: ${STATUS}  "

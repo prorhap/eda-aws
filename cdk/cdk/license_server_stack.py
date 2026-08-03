@@ -169,8 +169,6 @@ class LicenseServerStack(Stack):
             ],
             tags=[{"key": "Name", "value": "eda-license-server"}],
         )
-        self.instance.add_dependency(self.eni)
-        self.instance.add_dependency(instance_profile)
 
         # ── Outputs ──────────────────────────────────────────
         CfnOutput(self, "LicenseInstanceId", value=self.instance.ref)

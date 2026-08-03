@@ -60,6 +60,7 @@ def client_error(code, message, operation="TestOperation"):
 def interface_endpoint(
     endpoint_id="vpce-1",
     *,
+    service_name=LOGS_SERVICE,
     state="available",
     private_dns=True,
     groups=None,
@@ -67,7 +68,7 @@ def interface_endpoint(
 ):
     return {
         "VpcEndpointId": endpoint_id,
-        "ServiceName": LOGS_SERVICE,
+        "ServiceName": service_name,
         "State": state,
         "VpcEndpointType": "Interface",
         "PrivateDnsEnabled": private_dns,
@@ -286,7 +287,13 @@ def test_managed_endpoints_must_be_available():
         )
 
 
-def test_base_stack_synth_reuses_external_endpoints(monkeypatch):
+@pytest.mark.parametrize(
+    ("enable_ssm", "expected_interface_count"),
+    [(False, 4), (True, 7)],
+)
+def test_base_stack_synth_reuses_external_endpoints(
+    monkeypatch, enable_ssm, expected_interface_count
+):
     class SynthEc2Client(FakeClient):
         def describe_subnets(self, **kwargs):
             return {
@@ -343,6 +350,7 @@ def test_base_stack_synth_reuses_external_endpoints(monkeypatch):
         context={
             "eda:vpc_id": "vpc-123",
             "eda:subnet_id": "subnet-123",
+            "eda:enable_ssm": enable_ssm,
         }
     )
     stack = BaseStack(
@@ -366,7 +374,7 @@ def test_base_stack_synth_reuses_external_endpoints(monkeypatch):
         if resource["Properties"]["VpcEndpointType"] == "Gateway"
     ]
 
-    assert len(interface_resources) == 4
+    assert len(interface_resources) == expected_interface_count
     assert len(gateway_resources) == 1
     template.has_output(
         "SkippedInterfaceEndpoints",
@@ -376,3 +384,127 @@ def test_base_stack_synth_reuses_external_endpoints(monkeypatch):
         "SkippedGatewayEndpoints",
         {"Value": "s3"},
     )
+    trail_buckets = template.find_resources(
+        "AWS::S3::Bucket",
+        {
+            "DeletionPolicy": "Retain",
+            "UpdateReplacePolicy": "Retain",
+        },
+    )
+    assert len(trail_buckets) == 1
+    assert "BucketName" not in next(iter(trail_buckets.values()))["Properties"]
+
+
+def test_attachment_failure_stops_before_cloudformation(monkeypatch):
+    autoscaling_service = "com.amazonaws.ap-northeast-2.autoscaling"
+    existing_services = [
+        LOGS_SERVICE,
+        "com.amazonaws.ap-northeast-2.cloudformation",
+        "com.amazonaws.ap-northeast-2.ec2",
+        "com.amazonaws.ap-northeast-2.elasticloadbalancing",
+    ]
+
+    class AttachmentEc2Client(FakeClient):
+        def __init__(self):
+            super().__init__(
+                paginators={
+                    "describe_vpc_endpoints": FakePaginator(
+                        pages=[
+                            {
+                                "VpcEndpoints": [
+                                    interface_endpoint(
+                                        f"vpce-{index}",
+                                        service_name=service_name,
+                                    )
+                                    for index, service_name in enumerate(
+                                        existing_services
+                                    )
+                                ]
+                            }
+                        ]
+                    )
+                },
+                security_groups=[security_group()],
+            )
+            self.az_checks = []
+
+        def describe_subnets(self, **kwargs):
+            return {
+                "Subnets": [
+                    {
+                        "AvailabilityZone": "ap-northeast-2a",
+                        "CidrBlock": "10.0.1.0/24",
+                    }
+                ]
+            }
+
+        def describe_route_tables(self, **kwargs):
+            return {"RouteTables": [{"RouteTableId": "rtb-primary"}]}
+
+        def describe_vpc_endpoint_services(self, **kwargs):
+            service_name = kwargs["ServiceNames"][0]
+            self.az_checks.append(service_name)
+            supported_azs = (
+                ["ap-northeast-2b"]
+                if service_name == autoscaling_service
+                else ["ap-northeast-2a"]
+            )
+            return {
+                "ServiceDetails": [
+                    {"AvailabilityZones": supported_azs}
+                ]
+            }
+
+    ec2_client = AttachmentEc2Client()
+    cfn_client = FakeClient(
+        paginators={
+            "list_stack_resources": FakePaginator(
+                pages=[{"StackResourceSummaries": []}]
+            )
+        }
+    )
+
+    def fake_boto3_client(service_name, **kwargs):
+        return cfn_client if service_name == "cloudformation" else ec2_client
+
+    def fake_vpc_lookup(scope, construct_id, **kwargs):
+        return ec2.Vpc(
+            scope,
+            "SyntheticVpc",
+            ip_addresses=ec2.IpAddresses.cidr("10.0.0.0/16"),
+            max_azs=1,
+            nat_gateways=0,
+        )
+
+    monkeypatch.setattr(
+        "cdk.base_stack.boto3.client", fake_boto3_client
+    )
+    monkeypatch.setattr(
+        ec2.Vpc, "from_lookup", staticmethod(fake_vpc_lookup)
+    )
+
+    app = cdk.App(
+        context={
+            "eda:vpc_id": "vpc-attachment",
+            "eda:subnet_id": "subnet-attachment",
+        }
+    )
+    with pytest.raises(
+        ValueError,
+        match=(
+            "autoscaling.*does not support.*ap-northeast-2a"
+        ),
+    ):
+        BaseStack(
+            app,
+            "EdaBase",
+            env=cdk.Environment(
+                account="111111111111",
+                region="ap-northeast-2",
+            ),
+        )
+
+    partial_stack = app.node.find_child("EdaBase")
+    template = assertions.Template.from_stack(partial_stack)
+    assert template.find_resources("AWS::EC2::VPCEndpoint") == {}
+    assert ec2_client.az_checks == [autoscaling_service]

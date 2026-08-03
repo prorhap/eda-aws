@@ -64,6 +64,24 @@ ONTAP_MAX_GIB_PER_HA = 524_288  # 512 TiB per HA pair
 ONTAP_MAX_HA_PAIRS = 12
 
 
+def openzfs_volume_layout(size_gib: int) -> dict[str, tuple[int, int]]:
+    """Return child volume (quota, reservation) values within parent capacity."""
+    return {
+        "tools": (
+            min(size_gib, max(64, size_gib // 10)),
+            min(size_gib, max(16, size_gib // 50)),
+        ),
+        "work": (
+            min(size_gib, max(128, size_gib * 4 // 10)),
+            min(size_gib, max(32, size_gib * 2 // 10)),
+        ),
+        "scratch": (
+            min(size_gib, max(128, size_gib * 4 // 10)),
+            0,
+        ),
+    }
+
+
 class StorageStack(Stack):
 
     def __init__(
@@ -161,11 +179,10 @@ class StorageStack(Stack):
 
             # Scale quotas/reservations proportionally to parent FS capacity.
             # AWS FSx requires each child quota <= parent capacity and sum of reservations <= parent.
-            tools_quota       = max(64,  oz_size // 10)   # ~10% of parent, min 64 GiB
-            tools_reservation = max(16,  oz_size // 50)
-            work_quota        = max(128, oz_size * 4 // 10)  # ~40%
-            work_reservation  = max(32,  oz_size * 2 // 10)  # ~20%
-            scratch_quota     = max(128, oz_size * 4 // 10)  # ~40%
+            volume_layout = openzfs_volume_layout(oz_size)
+            tools_quota, tools_reservation = volume_layout["tools"]
+            work_quota, work_reservation = volume_layout["work"]
+            scratch_quota, _ = volume_layout["scratch"]
 
             self.vol_tools = self._create_openzfs_volume(
                 "OzVolTools", "fsxz_tools",
@@ -254,7 +271,6 @@ class StorageStack(Stack):
             # fsxadmin password (필수는 아니지만 ONTAP CLI 접속용으로 저장)
             ontap_admin_secret = secretsmanager.Secret(
                 self, "OntapAdminSecret",
-                secret_name="eda/ontap/fsxadmin",
                 description="FSx ONTAP fsxadmin password",
                 generate_secret_string=secretsmanager.SecretStringGenerator(
                     password_length=24,

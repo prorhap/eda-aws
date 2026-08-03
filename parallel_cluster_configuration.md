@@ -22,7 +22,7 @@ Running `setup.sh` produces the following environment end-to-end:
 | Compute Node | `r8i.32xlarge` | 0–2 (auto scale) | Simulation / regression workload |
 
 - The Head Node is always running. It runs the Slurm controller (`slurmctld`) and must not be used for simulation jobs.
-- The Login Node sits behind an ALB. Users SSH into it for daily work.
+- The Login Node sits behind an NLB. Users SSH into it for daily work.
 - Compute Nodes start automatically when jobs are submitted (`MinCount: 0`) and terminate after 15 minutes of idle time (`ScaledownIdletime: 15`).
 
 ### 1.2 Storage layout
@@ -848,7 +848,7 @@ recorded to S3.
 | Item | Setting |
 |---|---|
 | Trail name | `eda-trail` |
-| Log destination | `s3://eda-cloudtrail-<account-id>/` |
+| Log destination | S3 bucket in the `{prefix}Base` stack output `TrailBucketName` |
 | Encryption | KMS (`eda/cloudtrail`) |
 | Target events | Management events (read + write) |
 | S3 lifecycle | 90 days → Glacier, 365 days → Delete |

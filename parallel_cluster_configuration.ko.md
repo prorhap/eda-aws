@@ -21,7 +21,7 @@
 | Compute Node | `r8i.32xlarge` | 0–2 (자동 증감) | 시뮬레이션 / 리그레션 워크로드 |
 
 - Head Node는 항상 가동 중이다. Slurm 컨트롤러(`slurmctld`)가 동작하며, 시뮬레이션 잡 실행에 사용하면 안 된다.
-- Login Node는 ALB 뒤에 위치한다. 사용자는 일상 작업을 위해 이 노드에 SSH로 접속한다.
+- Login Node는 NLB 뒤에 위치한다. 사용자는 일상 작업을 위해 이 노드에 SSH로 접속한다.
 - Compute Node는 잡이 제출될 때 자동으로 시작(`MinCount: 0`)되며, 15분 유휴 후 자동 종료(`ScaledownIdletime: 15`)된다.
 
 ### 1.2 스토리지 레이아웃
@@ -827,7 +827,7 @@ CDK 배포 시 CloudTrail이 자동 활성화된다. 모든 AWS API 호출이 S3
 | 항목 | 설정 |
 |---|---|
 | Trail 이름 | `eda-trail` |
-| 로그 저장 | `s3://eda-cloudtrail-<account-id>/` |
+| 로그 저장 | `{prefix}Base` 스택 출력 `TrailBucketName`의 S3 버킷 |
 | 암호화 | KMS (`eda/cloudtrail`) |
 | 대상 이벤트 | 관리 이벤트 (읽기+쓰기) |
 | S3 라이프사이클 | 90일 → Glacier, 365일 → 삭제 |

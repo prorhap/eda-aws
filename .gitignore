@@ -23,6 +23,7 @@ __pycache__/
 
 # ── pcluster ──────────────────────────────────
 cdk/pcluster-config.yaml
+.pcluster-venv/
 
 # ── SSH keys ──────────────────────────────────
 *.pem

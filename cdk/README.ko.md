@@ -15,7 +15,7 @@ EDA on AWS 프로젝트의 CDK Python 앱. 루트 `setup.sh`가 자동으로 ven
 
 | 스택 | 파일 | 역할 | 조건 |
 |---|---|---|---|
-| `{prefix}Base` | `cdk/base_stack.py` | VPC import, Security Groups (cluster/FSx/ONTAP + endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + 필요 시 elb/asg) | 항상 |
+| `{prefix}Base` | `cdk/base_stack.py` | VPC import, Security Groups (cluster/FSx/ONTAP + endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + 필요 시 elb/asg 또는 SSM endpoints) | 항상 |
 | `{prefix}Storage` | `cdk/storage_stack.py` | FSx OpenZFS / FSx NetApp ONTAP + 자식 볼륨 (tools/work/scratch) + CloudWatch Alarm | `eda:enable_openzfs` 또는 `eda:enable_ontap` |
 | `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EDA 라이선스 서버용 EC2 + static ENI (MAC 영속성) | `eda:enable_license_server=true` |
 
@@ -43,6 +43,7 @@ EDA on AWS 프로젝트의 CDK Python 앱. 루트 `setup.sh`가 자동으로 ven
 | `eda:subnet_id` | — (필수) | str | Private subnet ID |
 | `eda:enable_vpc_endpoints` | `true` | bool | Base 스택 내부의 VPC endpoint 생성 |
 | `eda:enable_login_node` | `true` | bool | ELB/ASG endpoint 포함 여부 |
+| `eda:enable_ssm` | `false` | bool | SSM/SSM Messages/EC2 Messages endpoint 포함 여부 |
 | `eda:enable_openzfs` | `true` | bool | FSx OpenZFS 생성 |
 | `eda:openzfs_size_gib` | `10240` | int | OpenZFS 용량 (64 ~ 524288) |
 | `eda:openzfs_throughput` | `2560` | int | MBps: 160·320·640·1280·2560·3840·5120·7680·10240 |

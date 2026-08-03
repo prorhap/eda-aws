@@ -54,13 +54,17 @@ aws configure set region ap-northeast-2
 The deployment identity must be able to inspect the existing network and stack
 state. Preflight requires `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
 `ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
-`ec2:DescribeSecurityGroups`, and `cloudformation:ListStackResources`, in
-addition to the permissions required to deploy the stacks.
+`ec2:DescribeSecurityGroups`, `ec2:DescribeInstanceTypeOfferings`,
+`ec2:DescribeVpcAttribute`, `cloudformation:ListStacks`, and
+`cloudformation:ListStackResources`, in addition to the permissions required
+to deploy the stacks.
 
 ### 2.2 Install required tools
 
 The following must be installed **before** running `setup.sh`.
 The CDK CLI and pcluster CLI are installed automatically by `setup.sh`.
+pcluster is isolated in the project's `.pcluster-venv` to prevent Python
+dependency conflicts.
 
 **AWS CLI v2**
 
@@ -188,18 +192,25 @@ where a quota larger than the parent is not allowed).
 
 ## 4. Access
 
+Activate the project-local environment before running pcluster commands
+manually:
+
+```bash
+source .pcluster-venv/bin/activate
+```
+
 ### Login Node (recommended)
 
-Day-to-day user work happens on the Login Node. Connecting via the ALB DNS
+Day-to-day user work happens on the Login Node. Connecting via the NLB DNS
 distributes connections automatically across nodes in the pool.
 
 ```bash
-# Look up the Login Node ALB DNS
+# Look up the Login Node NLB DNS
 pcluster describe-cluster --cluster-name <CLUSTER_NAME> --region ap-northeast-2 \
   | jq -r '.loginNodes[0].address'
 
 # Connect (uses the same pem key as the Head Node)
-ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_ALB_DNS>
+ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 ```
 
 **How the Login Node KeyPair works (pcluster 3.15+):**
@@ -366,6 +377,11 @@ needed.
   available and associated with the selected subnet's route table.
 - The selected single subnet's Availability Zone must support every Interface
   endpoint that the stack needs to create.
+- If an initial Base, Storage, or License stack creation left a
+  `ROLLBACK_COMPLETE` or `CREATE_FAILED` stack, `setup.sh` deletes that failed
+  stack and recreates it. Previously usable stacks are never auto-deleted.
+- A failed initial ParallelCluster is also deleted and recreated with the same
+  name after deletion completes.
 - If `cdk.context.json` caches a different VPC, setup.sh automatically backs
   it up and deletes it.
 - When migrating from an older version (the two-stack structure of

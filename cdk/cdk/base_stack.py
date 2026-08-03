@@ -18,6 +18,7 @@
 옵션 context:
   - eda:enable_vpc_endpoints   (default: true)
   - eda:enable_login_node      (default: true) — ELB/ASG endpoint 생성 여부
+  - eda:enable_ssm             (default: false) — SSM endpoint 생성 여부
 """
 
 from collections import defaultdict
@@ -46,6 +47,7 @@ from constructs import Construct
 INTERFACE_ALWAYS = ["logs", "cloudformation", "ec2"]
 GATEWAY_ALWAYS = ["s3", "dynamodb"]
 INTERFACE_LOGIN_NODE = ["elasticloadbalancing", "autoscaling"]
+INTERFACE_SSM = ["ssm", "ssmmessages", "ec2messages"]
 
 
 class BaseStack(Stack):
@@ -187,7 +189,6 @@ class BaseStack(Stack):
 
         trail_bucket = s3.Bucket(
             self, "TrailBucket",
-            bucket_name=f"eda-cloudtrail-{Stack.of(self).account}",
             enforce_ssl=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             versioned=True,
@@ -289,9 +290,12 @@ class BaseStack(Stack):
 
         # Interface endpoints
         enable_login = self._ctx_bool("eda:enable_login_node", True)
+        enable_ssm = self._ctx_bool("eda:enable_ssm", False)
         interface_services = list(INTERFACE_ALWAYS)
         if enable_login:
             interface_services += INTERFACE_LOGIN_NODE
+        if enable_ssm:
+            interface_services += INTERFACE_SSM
 
         created_interface = []
         skipped_interface = []

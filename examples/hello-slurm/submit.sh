@@ -2,14 +2,14 @@
 #
 # submit.sh — 로컬에서 ParallelCluster로 sbatch 제출
 #
-# 기본적으로 Login Node(ALB DNS)로 접속합니다. Head Node IP를 써도 동일하게 동작.
+# 기본적으로 Login Node(NLB DNS)로 접속합니다. Head Node IP를 써도 동일하게 동작.
 #
 # Usage:
 #   ./submit.sh                          # hello.sbatch 제출
 #   ./submit.sh path/to/other.sbatch     # 다른 job script
 #
 # Required env:
-#   REMOTE_HOST      Login Node ALB DNS (권장) 또는 Head Node private IP
+#   REMOTE_HOST      Login Node NLB DNS (권장) 또는 Head Node private IP
 #                    예: hpc-cl-xxxx.elb.ap-northeast-2.amazonaws.com, 10.0.10.35
 #
 # Optional env:
@@ -30,11 +30,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 JOB_SCRIPT="${1:-${SCRIPT_DIR}/hello.sbatch}"
 
-# Login Node ALB DNS 또는 Head Node private IP — 환경변수로 지정
+# Login Node NLB DNS 또는 Head Node private IP — 환경변수로 지정
 REMOTE_HOST="${REMOTE_HOST:-${HEAD_IP:-}}"
 if [[ -z "${REMOTE_HOST}" ]]; then
   echo "ERROR: REMOTE_HOST is not set. Usage:" >&2
-  echo "  REMOTE_HOST=<login-node-alb-dns-or-head-ip> $0" >&2
+  echo "  REMOTE_HOST=<login-node-nlb-dns-or-head-ip> $0" >&2
   exit 1
 fi
 

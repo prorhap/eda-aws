@@ -37,12 +37,9 @@ HeadNode:
       Throughput: 250
 
 #LOGINNODES_BEGIN
-# ParallelCluster 3.15+: LoginNodes no longer supports KeyName.
-# Two options for Login Node access:
-#   1) Custom OnNodeConfigured script that copies HeadNode's
-#      ~ec2-user/.ssh/authorized_keys from a shared FSx path
-#   2) AWS Directory Service (AD/SSSD) integration for centralized user accounts
-# For immediate access, use the HeadNode directly (same KeyPair).
+# ParallelCluster 3.15 removed LoginNodes.Pools[].Ssh.KeyName.
+# The default user's shared /home keeps the Head Node authorized_keys available
+# on login nodes, so the Head Node private key remains valid for ec2-user.
 LoginNodes:
   Pools:
     - Name: users

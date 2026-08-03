@@ -51,12 +51,15 @@ aws configure set region ap-northeast-2
 배포 자격증명은 기존 네트워크와 스택 상태를 조회할 수 있어야 합니다. 사전검사에는
 스택 배포 권한 외에 `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
 `ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
-`ec2:DescribeSecurityGroups`, `cloudformation:ListStackResources`가 필요합니다.
+`ec2:DescribeSecurityGroups`, `ec2:DescribeInstanceTypeOfferings`,
+`ec2:DescribeVpcAttribute`, `cloudformation:ListStacks`,
+`cloudformation:ListStackResources`가 필요합니다.
 
 ### 2.2 필수 도구 설치
 
 아래 도구들은 `setup.sh` 실행 **전** 설치되어 있어야 합니다.
-CDK CLI와 pcluster CLI는 `setup.sh`가 자동 설치합니다.
+CDK CLI와 pcluster CLI는 `setup.sh`가 자동 설치합니다. pcluster는 Python
+패키지 충돌을 막기 위해 프로젝트의 `.pcluster-venv`에 격리 설치됩니다.
 
 **AWS CLI v2**
 
@@ -183,18 +186,24 @@ FSx OpenZFS 자식 볼륨(tools/work/scratch)의 quota/reservation은 부모 용
 
 ## 4. 접속
 
+수동으로 pcluster 명령을 실행할 셸에서는 프로젝트 전용 환경을 먼저 활성화합니다.
+
+```bash
+source .pcluster-venv/bin/activate
+```
+
 ### Login Node 
 
-사용자 일상 작업은 Login Node에서 합니다. ALB DNS로 접속하면 풀에 속한 노드로
+사용자 일상 작업은 Login Node에서 합니다. NLB DNS로 접속하면 풀에 속한 노드로
 자동 분산됩니다.
 
 ```bash
-# Login Node ALB DNS 확인
+# Login Node NLB DNS 확인
 pcluster describe-cluster --cluster-name <CLUSTER_NAME> --region ap-northeast-2 \
   | jq -r '.loginNodes[0].address'
 
 # 접속 (Head Node와 동일한 pem 키 사용)
-ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_ALB_DNS>
+ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 ```
 
 **Login Node의 KeyPair 작동 방식 (pcluster 3.15+):**
@@ -352,6 +361,10 @@ FSx 파일시스템, CloudTrail S3 버킷, KMS 키는 실수 방지를 위해 re
   CIDR의 HTTPS 허용이 필요합니다. Gateway endpoint는 선택 subnet의 route table에
   연결되어 있어야 합니다.
 - 선택한 단일 subnet의 AZ가 새로 생성할 모든 Interface endpoint를 지원해야 합니다.
+- 최초 Base, Storage, License 스택 생성 실패로 `ROLLBACK_COMPLETE` 또는
+  `CREATE_FAILED` 스택이 남으면 `setup.sh`가 해당 실패 스택을 삭제한 뒤
+  재생성합니다. 이전에 정상 사용한 스택은 자동 삭제하지 않습니다.
+- 실패한 최초 ParallelCluster도 삭제 완료를 기다린 뒤 같은 이름으로 재생성합니다.
 - `cdk.context.json`이 다른 VPC를 캐시하고 있으면 setup.sh가 자동으로 백업 후 삭제합니다.
 - 구버전(`EdaNetwork`, `EdaVpcEndpoints` 두 스택 구조)에서 올라오는 경우, 기존 스택을
   먼저 `cdk destroy` 또는 콘솔에서 삭제한 뒤 새로 배포하세요 (새 구조는 `{prefix}Base`
