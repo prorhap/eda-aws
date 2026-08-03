@@ -16,7 +16,7 @@ AWS 서울 리전에서 EDA simulation/regression 환경을 운영하기 위한 
 | 클러스터 배치 | Private subnet |
 | 스케줄러 | Slurm |
 | OS | RHEL 8.4+ |
-| ParallelCluster | 3.14.x |
+| ParallelCluster | 3.15.x (3.15.1 검증) |
 
 VPC CIDR과 사내망 CIDR은 겹치지 않도록 설계합니다. [R9]
 
@@ -98,8 +98,8 @@ Day 1 기본 스토리지로 가장 단순하고 빠른 구성입니다.
 | 항목 | 값 |
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (2세대, NVMe L2ARC 캐시) |
-| Storage capacity | 10 TiB (범위: 64 GiB ~ 512 TiB) |
-| Throughput | 2,560 MBps (허용값: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
+| Storage capacity | 320 GiB (범위: 64 GiB ~ 512 TiB) |
+| Throughput | 1,280 MBps (허용값: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
 | SSD IOPS | Automatic (3 IOPS/GiB) |
 | Backup retention | 7 days |
 
@@ -107,9 +107,12 @@ Day 1 기본 스토리지로 가장 단순하고 빠른 구성입니다.
 
 | 볼륨 | Mount | Quota | Reservation | 압축 | 성격 |
 |---|---|---:|---:|---|---|
-| `fsxz_tools` | `/fsxz/tools` | 1 TiB | 256 GiB | ZSTD | EDA 툴 설치본·wrapper·env |
-| `fsxz_work` | `/fsxz/work` | 4 TiB | 2 TiB | ZSTD | RTL·TB·results·coverage |
-| `fsxz_scratch` | `/fsxz/scratch` | 4 TiB | 0 (thin) | LZ4 | job workdir |
+| `fsxz_tools` | `/fsxz/tools` | 64 GiB | 16 GiB | ZSTD | EDA 툴 설치본·wrapper·env |
+| `fsxz_work` | `/fsxz/work` | 128 GiB | 64 GiB | ZSTD | RTL·TB·results·coverage |
+| `fsxz_scratch` | `/fsxz/scratch` | 128 GiB | 0 (thin) | LZ4 | job workdir |
+
+Quota와 reservation은 설정한 부모 용량에 따라 자동 계산됩니다. 위 값은 프로젝트
+기본값인 320 GiB에서 생성되는 레이아웃입니다.
 
 ### 4.2 FSx for NetApp ONTAP (옵션)
 
@@ -196,7 +199,8 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 4. Synopsys SCL 또는 선택한 벤더의 라이선스 매니저 바이너리 설치
 5. 라이선스 파일 배치 (예: `/opt/eda/<vendor>/licenses/license.dat`)
 6. 벤더 라이선스 데몬 기동
-7. Cluster에서 `export LM_LICENSE_FILE=27000@<private-ip>` 설정
+7. Cluster에서 `export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<private-ip>` 설정
+   (기본 포트: 27000)
 
 ### 5.4 다른 라이선스 벤더
 
@@ -349,7 +353,7 @@ Login Node를 유지할 때의 장점:
 | 항목 | 값 |
 |---|---|
 | Region | ap-northeast-2 |
-| ParallelCluster | 3.14.x |
+| ParallelCluster | 3.15.x (3.15.1 검증) |
 | Scheduler | Slurm |
 | OS | RHEL 8.4+ |
 | Queue 수 | 1 |
@@ -369,8 +373,8 @@ Login Node를 유지할 때의 장점:
 | 항목 | OpenZFS (기본) | ONTAP (옵션) |
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
-| Capacity | 10 TiB | 10 TiB |
-| Throughput | 2,560 MBps | 3,072 MBps × 1 HA |
+| Capacity | 320 GiB | 10 TiB |
+| Throughput | 1,280 MBps | 3,072 MBps × 1 HA |
 
 ---
 
@@ -396,8 +400,8 @@ VPC_ID=""          # 기존 VPC ID
 SUBNET_ID=""       # 기존 private subnet ID
 
 ENABLE_OPENZFS=1
-OPENZFS_SIZE_GIB=10240
-OPENZFS_THROUGHPUT=2560
+OPENZFS_SIZE_GIB=320
+OPENZFS_THROUGHPUT=1280
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -424,8 +428,8 @@ ENABLE_VPC_ENDPOINTS=1
 | `REGION` | `ap-northeast-2` | AWS 리전 |
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster 이름 |
 | `ENABLE_OPENZFS` | `1` | FSx OpenZFS 생성 여부 |
-| `OPENZFS_SIZE_GIB` | `10240` | OpenZFS 용량 (64 ~ 524,288) |
-| `OPENZFS_THROUGHPUT` | `2560` | OpenZFS throughput (9개 허용값) |
+| `OPENZFS_SIZE_GIB` | `320` | OpenZFS 용량 (64 ~ 524,288) |
+| `OPENZFS_THROUGHPUT` | `1280` | OpenZFS throughput (9개 허용값) |
 | `ENABLE_ONTAP` | `0` | FSx ONTAP 생성 여부 |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP 용량 (1,024 ~ 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | HA pair당 throughput (1536 / 3072 / 6144) |
@@ -501,18 +505,20 @@ flowchart TD
 
 ---
 
-## 16. 비용 개요 (월, OnDemand 기준)
+## 16. 비용 개요
 
-| 구성 | 금액 (USD) |
-|---|---:|
-| 기본 (OpenZFS + 필수 라이선스 서버, Compute 50% 가동) | ~$3,180 |
-| 풀 옵션 (ONTAP 포함) | ~$7,700 |
+월 비용은 EC2, FSx, VPC Endpoint, 로그, 백업, 데이터 전송 사용량과 서울 리전의
+현재 단가에 따라 달라지므로 고정 금액으로 단정하지 않습니다.
 
-주요 절감 포인트:
+| 비용 구분 | 기본 리소스 |
+|---|---|
+| 상시 실행 | Head Node, Login Node, 필수 License Server, FSx OpenZFS 320 GiB / 1,280 MBps, Interface VPC Endpoint |
+| 사용량 기반 | `r8i.32xlarge` Compute Node(`MinCount=0`, `MaxCount=2`), 백업, 로그, 데이터 전송 |
+| 선택 | FSx for ONTAP, SSM Interface Endpoint |
 
-- Login Node 제거 (on-prem submission): -$460
-- Compute Spot 전환: -50% (약 -$1,200)
-- OpenZFS throughput 2560 → 1280: 스토리지 비용 ~30% 절감
+승인 직전에 [AWS Pricing Calculator](https://calculator.aws/)에서
+`ap-northeast-2` 기준 견적을 생성합니다. EDA 소프트웨어 및 floating license
+비용은 AWS 인프라 비용에 포함되지 않습니다.
 
 ---
 

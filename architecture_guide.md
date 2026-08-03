@@ -17,7 +17,7 @@ EDA simulation/regression environment in the AWS Seoul region.
 | Cluster placement | Private subnet |
 | Scheduler | Slurm |
 | OS | RHEL 8.4+ |
-| ParallelCluster | 3.14.x |
+| ParallelCluster | 3.15.x (validated with 3.15.1) |
 
 The VPC CIDR and the corporate network CIDR are designed not to overlap. [R9]
 
@@ -101,8 +101,8 @@ The simplest and fastest configuration as the Day 1 default storage.
 | Item | Value |
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (gen 2, NVMe L2ARC cache) |
-| Storage capacity | 10 TiB (range: 64 GiB – 512 TiB) |
-| Throughput | 2,560 MBps (allowed: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
+| Storage capacity | 320 GiB (range: 64 GiB – 512 TiB) |
+| Throughput | 1,280 MBps (allowed: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
 | SSD IOPS | Automatic (3 IOPS/GiB) |
 | Backup retention | 7 days |
 
@@ -110,9 +110,13 @@ The simplest and fastest configuration as the Day 1 default storage.
 
 | Volume | Mount | Quota | Reservation | Compression | Purpose |
 |---|---|---:|---:|---|---|
-| `fsxz_tools` | `/fsxz/tools` | 1 TiB | 256 GiB | ZSTD | EDA tool installs · wrappers · env |
-| `fsxz_work` | `/fsxz/work` | 4 TiB | 2 TiB | ZSTD | RTL · TB · results · coverage |
-| `fsxz_scratch` | `/fsxz/scratch` | 4 TiB | 0 (thin) | LZ4 | Job workdir |
+| `fsxz_tools` | `/fsxz/tools` | 64 GiB | 16 GiB | ZSTD | EDA tool installs · wrappers · env |
+| `fsxz_work` | `/fsxz/work` | 128 GiB | 64 GiB | ZSTD | RTL · TB · results · coverage |
+| `fsxz_scratch` | `/fsxz/scratch` | 128 GiB | 0 (thin) | LZ4 | Job workdir |
+
+The setup calculates these quotas and reservations from the configured parent
+capacity. The values above are the layout produced by the 320 GiB project
+default.
 
 ### 4.2 FSx for NetApp ONTAP (optional)
 
@@ -202,7 +206,8 @@ operator then performs the following manually:
 4. Install Synopsys SCL or the selected vendor's license manager binaries
 5. Place the license file (e.g., `/opt/eda/<vendor>/licenses/license.dat`)
 6. Start the vendor license daemon
-7. On the cluster, set `export LM_LICENSE_FILE=27000@<private-ip>`
+7. On the cluster, set
+   `export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<private-ip>` (default port: 27000)
 
 ### 5.4 Other license vendors
 
@@ -366,7 +371,7 @@ Benefits of keeping the Login Node:
 | Item | Value |
 |---|---|
 | Region | ap-northeast-2 |
-| ParallelCluster | 3.14.x |
+| ParallelCluster | 3.15.x (validated with 3.15.1) |
 | Scheduler | Slurm |
 | OS | RHEL 8.4+ |
 | Number of queues | 1 |
@@ -386,8 +391,8 @@ Benefits of keeping the Login Node:
 | Item | OpenZFS (default) | ONTAP (optional) |
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
-| Capacity | 10 TiB | 10 TiB |
-| Throughput | 2,560 MBps | 3,072 MBps × 1 HA |
+| Capacity | 320 GiB | 10 TiB |
+| Throughput | 1,280 MBps | 3,072 MBps × 1 HA |
 
 ---
 
@@ -414,8 +419,8 @@ VPC_ID=""          # Existing VPC ID
 SUBNET_ID=""       # Existing private subnet ID
 
 ENABLE_OPENZFS=1
-OPENZFS_SIZE_GIB=10240
-OPENZFS_THROUGHPUT=2560
+OPENZFS_SIZE_GIB=320
+OPENZFS_THROUGHPUT=1280
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -443,8 +448,8 @@ applies.
 | `REGION` | `ap-northeast-2` | AWS region |
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster name |
 | `ENABLE_OPENZFS` | `1` | Whether to create FSx OpenZFS |
-| `OPENZFS_SIZE_GIB` | `10240` | OpenZFS capacity (64 – 524,288) |
-| `OPENZFS_THROUGHPUT` | `2560` | OpenZFS throughput (9 allowed values) |
+| `OPENZFS_SIZE_GIB` | `320` | OpenZFS capacity (64 – 524,288) |
+| `OPENZFS_THROUGHPUT` | `1280` | OpenZFS throughput (9 allowed values) |
 | `ENABLE_ONTAP` | `0` | Whether to create FSx ONTAP |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP capacity (1,024 – 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | Throughput per HA pair (1536 / 3072 / 6144) |
@@ -520,18 +525,20 @@ flowchart TD
 
 ---
 
-## 16. Cost overview (monthly, on-demand)
+## 16. Cost overview
 
-| Configuration | Amount (USD) |
-|---|---:|
-| Default (OpenZFS + required license server, Compute 50% utilization) | ~$3,180 |
-| Full options (ONTAP included) | ~$7,700 |
+The monthly total is not fixed because EC2, FSx, VPC endpoint, log, backup, and
+data-transfer charges vary with usage and current Seoul Region pricing.
 
-Major savings:
+| Cost class | Default resources |
+|---|---|
+| Always on | Head Node, Login Node, required License Server, FSx OpenZFS 320 GiB / 1,280 MBps, Interface VPC endpoints |
+| Usage based | `r8i.32xlarge` Compute Nodes (`MinCount=0`, `MaxCount=2`), backups, logs, and data transfer |
+| Optional | FSx for ONTAP and SSM Interface endpoints |
 
-- Remove Login Node (on-prem submission): -$460
-- Compute on Spot: -50% (~ -$1,200)
-- OpenZFS throughput 2560 → 1280: ~30% storage cost savings
+Create the deployment estimate in [AWS Pricing Calculator](https://calculator.aws/)
+for `ap-northeast-2` immediately before approval. EDA software and floating
+license fees are not included in AWS infrastructure charges.
 
 ---
 

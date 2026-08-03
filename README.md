@@ -269,8 +269,8 @@ vendor and make the license file use the same values.
 ```bash
 ssh -i ~/.ssh/eda-license-key-<ACCOUNT>.pem ec2-user@<LICENSE_IP>
 
-# Environment variable to use on the cluster side
-export LM_LICENSE_FILE=27000@<LICENSE_IP>
+# Use the configured manager port (default: 27000)
+export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<LICENSE_IP>
 ```
 
 For the License Host ID, use the License Server MAC address printed by

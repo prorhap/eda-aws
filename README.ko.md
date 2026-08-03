@@ -261,8 +261,8 @@ daemon은 TCP 27020을 사용합니다. 다른 벤더를 사용하면 두 포트
 ```bash
 ssh -i ~/.ssh/eda-license-key-<ACCOUNT>.pem ec2-user@<LICENSE_IP>
 
-# 클러스터 쪽에서 사용할 환경변수
-export LM_LICENSE_FILE=27000@<LICENSE_IP>
+# 설정한 manager 포트 사용(기본값: 27000)
+export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<LICENSE_IP>
 ```
 
 License Host ID는 `pcluster-config.yaml` 생성 시 setup.sh가 출력하는
