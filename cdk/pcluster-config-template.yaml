@@ -50,6 +50,11 @@ LoginNodes:
           - ${BASE.PrimarySubnetId}
         AdditionalSecurityGroups:
           - ${BASE.SgClusterNodesId}
+#DCV_BEGIN
+      Dcv:
+        Enabled: true
+        AllowedIps: ${DCV_ALLOWED_IPS}
+#DCV_END
 #LOGINNODES_END
 
 SharedStorage:

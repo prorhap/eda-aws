@@ -31,6 +31,8 @@
 #   SKIP_CLUSTER              Set to 1 to skip cluster creation (only generate config file)
 #   SKIP_CONNECTIVITY_CHECK   Set to 1 to bypass subnet 0.0.0.0/0 route + VPC endpoint check
 #   ENABLE_SSM                Set to 1 to enable SSM Session Manager access (default: 0)
+#   ENABLE_DCV                Set to 1 to enable DCV on Login Nodes (default: 0)
+#   DCV_ALLOWED_IPS           Required CIDR when ENABLE_DCV=1
 #   STACK_PREFIX              CDK stack prefix (default: Eda) — {prefix}Base, {prefix}Storage, {prefix}LicenseServer
 #
 #   ── Storage options ──────────────────────────────────────────────────
@@ -57,6 +59,9 @@
 #                             Always: logs, cloudformation, ec2, s3, dynamodb
 #                             + elasticloadbalancing, autoscaling when ENABLE_LOGIN_NODE=1
 #                             + ssm, ssmmessages, ec2messages when ENABLE_SSM=1
+#   CLUSTER_WAIT_TIMEOUT_SECONDS  Cluster monitoring timeout (default: 3600)
+#   CLUSTER_STATUS_ERROR_LIMIT    Consecutive describe failures (default: 5)
+#   CLUSTER_POLL_INTERVAL_SECONDS Poll interval (default: 30)
 #                             Existing endpoints in the VPC are automatically skipped.
 #
 set -euo pipefail
@@ -208,6 +213,62 @@ validate_binary_flag() {
     || error "${name} must be 0 or 1 (found: ${value})"
 }
 
+validate_positive_integer() {
+  local name="$1"
+  local value="$2"
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] \
+    || error "${name} must be a positive integer (found: ${value})"
+}
+
+validate_stack_prefix() {
+  local value="$1"
+  [[ "${value}" =~ ^[A-Za-z][A-Za-z0-9-]*$ && ${#value} -le 48 ]] \
+    || error "STACK_PREFIX must start with a letter, contain only letters, digits, or hyphens, and be 48 characters or fewer (found: ${value})"
+}
+
+validate_cluster_name() {
+  local value="$1"
+  [[ "${value}" =~ ^[A-Za-z][A-Za-z0-9-]*$ && ${#value} -le 60 ]] \
+    || error "CLUSTER_NAME must start with a letter, contain only letters, digits, or hyphens, and be 60 characters or fewer (found: ${value})"
+}
+
+validate_ipv4_cidr() {
+  local name="$1"
+  local value="$2"
+  python3 - "${value}" <<'PY' >/dev/null 2>&1 || error "${name} must be a valid IPv4 CIDR (found: ${value})"
+import ipaddress
+import sys
+
+network = ipaddress.ip_network(sys.argv[1], strict=True)
+if network.version != 4:
+    raise ValueError("IPv4 CIDR required")
+PY
+}
+
+ENABLE_LOGIN_NODE="${ENABLE_LOGIN_NODE:-1}"
+ENABLE_SSM="${ENABLE_SSM:-0}"
+ENABLE_DCV="${ENABLE_DCV:-0}"
+DCV_ALLOWED_IPS="${DCV_ALLOWED_IPS:-}"
+CLUSTER_WAIT_TIMEOUT_SECONDS="${CLUSTER_WAIT_TIMEOUT_SECONDS:-3600}"
+CLUSTER_STATUS_ERROR_LIMIT="${CLUSTER_STATUS_ERROR_LIMIT:-5}"
+CLUSTER_POLL_INTERVAL_SECONDS="${CLUSTER_POLL_INTERVAL_SECONDS:-30}"
+
+validate_stack_prefix "${STACK_PREFIX}"
+validate_cluster_name "${CLUSTER_NAME}"
+validate_binary_flag "ENABLE_LOGIN_NODE" "${ENABLE_LOGIN_NODE}"
+validate_binary_flag "ENABLE_SSM" "${ENABLE_SSM}"
+validate_binary_flag "ENABLE_DCV" "${ENABLE_DCV}"
+validate_positive_integer "CLUSTER_WAIT_TIMEOUT_SECONDS" "${CLUSTER_WAIT_TIMEOUT_SECONDS}"
+validate_positive_integer "CLUSTER_STATUS_ERROR_LIMIT" "${CLUSTER_STATUS_ERROR_LIMIT}"
+validate_positive_integer "CLUSTER_POLL_INTERVAL_SECONDS" "${CLUSTER_POLL_INTERVAL_SECONDS}"
+if [[ "${ENABLE_DCV}" == "1" ]]; then
+  [[ "${ENABLE_LOGIN_NODE}" == "1" ]] \
+    || error "ENABLE_DCV=1 requires ENABLE_LOGIN_NODE=1"
+  [[ -n "${DCV_ALLOWED_IPS}" ]] \
+    || error "DCV_ALLOWED_IPS is required when ENABLE_DCV=1"
+  validate_ipv4_cidr "DCV_ALLOWED_IPS" "${DCV_ALLOWED_IPS}"
+fi
+
 # ══════════════════════════════════════════════════════════════
 step "1/6  Environment Validation"
 # ══════════════════════════════════════════════════════════════
@@ -218,9 +279,14 @@ else
   warn "Config file not found: ${CONFIG_FILE} (using defaults + env only)"
 fi
 
-for cmd in aws python3 node npm jq; do
+for cmd in aws python3 jq; do
   command -v "${cmd}" >/dev/null 2>&1 || error "${cmd} is not installed"
 done
+if [[ "${SKIP_CDK:-0}" != "1" ]]; then
+  for cmd in node npm; do
+    command -v "${cmd}" >/dev/null 2>&1 || error "${cmd} is not installed"
+  done
+fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null) \
   || error "Unable to verify AWS credentials. Please run 'aws configure' first"
@@ -234,33 +300,40 @@ if [[ "${CURRENT_REGION}" != "${REGION}" ]]; then
   warn "aws CLI default region is '${CURRENT_REGION}' — overriding to ${REGION} for this session"
 fi
 
-# CDK CLI
-CDK_VERSION=""
-if command -v cdk >/dev/null 2>&1; then
-  CDK_VERSION=$(cdk --version 2>/dev/null | awk '{print $1}')
+if [[ "${SKIP_CDK:-0}" != "1" ]]; then
+  CDK_VERSION=""
+  if command -v cdk >/dev/null 2>&1; then
+    CDK_VERSION=$(cdk --version 2>/dev/null | awk '{print $1}')
+  fi
+  if [[ -z "${CDK_VERSION}" ]] || ! version_at_least "${CDK_VERSION}" "${CDK_MIN_VERSION}"; then
+    info "Installing a CDK CLI compatible with aws-cdk-lib 2.232.1..."
+    npm install -g "aws-cdk@^2.1033.0"
+    CDK_VERSION=$(cdk --version 2>/dev/null | awk '{print $1}')
+  fi
+  version_at_least "${CDK_VERSION}" "${CDK_MIN_VERSION}" \
+    || error "CDK CLI ${CDK_VERSION:-unknown} is older than required ${CDK_MIN_VERSION}"
+  info "CDK CLI: $(cdk --version 2>/dev/null | head -1)"
+else
+  info "Skipping CDK CLI validation (SKIP_CDK=1)"
 fi
-if [[ -z "${CDK_VERSION}" ]] || ! version_at_least "${CDK_VERSION}" "${CDK_MIN_VERSION}"; then
-  info "Installing a CDK CLI compatible with aws-cdk-lib 2.232.1..."
-  npm install -g "aws-cdk@^2.1033.0"
-  CDK_VERSION=$(cdk --version 2>/dev/null | awk '{print $1}')
-fi
-version_at_least "${CDK_VERSION}" "${CDK_MIN_VERSION}" \
-  || error "CDK CLI ${CDK_VERSION:-unknown} is older than required ${CDK_MIN_VERSION}"
-info "CDK CLI: $(cdk --version 2>/dev/null | head -1)"
 
 # ══════════════════════════════════════════════════════════════
 step "2/6  Install CDK Python Dependencies"
 # ══════════════════════════════════════════════════════════════
 
-if [[ ! -d "${CDK_DIR}/.venv" ]]; then
-  info "Creating Python venv..."
-  python3 -m venv "${CDK_DIR}/.venv"
-fi
+if [[ "${SKIP_CDK:-0}" != "1" ]]; then
+  if [[ ! -d "${CDK_DIR}/.venv" ]]; then
+    info "Creating Python venv..."
+    python3 -m venv "${CDK_DIR}/.venv"
+  fi
 
-source "${CDK_DIR}/.venv/bin/activate"
-pip install -q --upgrade pip
-pip install -q -r "${CDK_DIR}/requirements.txt"
-info "CDK Python dependencies installed"
+  source "${CDK_DIR}/.venv/bin/activate"
+  pip install -q --upgrade pip
+  pip install -q -r "${CDK_DIR}/requirements.txt"
+  info "CDK Python dependencies installed"
+else
+  info "Skipping CDK Python dependencies (SKIP_CDK=1)"
+fi
 
 # ══════════════════════════════════════════════════════════════
 step "3/6  Install pcluster CLI"
@@ -323,14 +396,11 @@ else
   info "License server: ENABLE_LICENSE_SERVER=${ENABLE_LICENSE_SERVER} (${LICENSE_INSTANCE_TYPE})"
 
   # ── Cluster topology ──
-  ENABLE_LOGIN_NODE="${ENABLE_LOGIN_NODE:-1}"
-  ENABLE_SSM="${ENABLE_SSM:-0}"
-  validate_binary_flag "ENABLE_LOGIN_NODE" "${ENABLE_LOGIN_NODE}"
-  validate_binary_flag "ENABLE_SSM" "${ENABLE_SSM}"
   if [[ "${ENABLE_LOGIN_NODE}" != "1" ]]; then
     warn "LoginNodes disabled — on-prem clients must have matching Slurm version, munge.key, and UID."
   fi
   info "LoginNodes: ENABLE_LOGIN_NODE=${ENABLE_LOGIN_NODE}"
+  info "Login Node DCV: ENABLE_DCV=${ENABLE_DCV}"
   info "SSM Session Manager: ENABLE_SSM=${ENABLE_SSM}"
 
   # ── VPC endpoints ──
@@ -591,6 +661,7 @@ fi
 
 sed \
   -e "s|\${REGION}|${REGION}|g" \
+  -e "s|\${DCV_ALLOWED_IPS}|${DCV_ALLOWED_IPS}|g" \
   -e "s|\${BASE.PrimarySubnetId}|${SUBNET_ID}|g" \
   -e "s|\${BASE.SgClusterNodesId}|${SG_CLUSTER}|g" \
   -e "s|\${BASE.KeyPairName}|${KEY_PAIR_NAME}|g" \
@@ -625,6 +696,14 @@ if [[ "${ENABLE_LOGIN_NODE:-1}" == "1" ]]; then
 else
   info "LoginNodes block: removed"
   sed -i.bak -e '/^#LOGINNODES_BEGIN$/,/^#LOGINNODES_END$/d' "${CONFIG}"
+fi
+
+if [[ "${ENABLE_LOGIN_NODE:-1}" == "1" && "${ENABLE_DCV:-0}" == "1" ]]; then
+  info "Login Node DCV block: kept"
+  sed -i.bak -e '/^#DCV_BEGIN$/d' -e '/^#DCV_END$/d' "${CONFIG}"
+else
+  info "Login Node DCV block: removed"
+  sed -i.bak -e '/^#DCV_BEGIN$/,/^#DCV_END$/d' "${CONFIG}"
 fi
 rm -f "${CONFIG}.bak"
 
@@ -800,17 +879,35 @@ info "Monitoring status..."
 echo ""
 
 # Poll locally until completion
+MONITOR_STARTED_SECONDS="${SECONDS}"
+CONSECUTIVE_STATUS_ERRORS=0
+LAST_STATUS="UNKNOWN"
 while true; do
-  STATUS=$("${PCLUSTER}" describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}" \
-    | jq -r '.clusterStatus' 2>/dev/null || echo "UNKNOWN")
+  DESCRIBE_ERROR=""
+  if CLUSTER_DESCRIPTION=$("${PCLUSTER}" describe-cluster \
+      --cluster-name "${CLUSTER_NAME}" --region "${REGION}" 2>&1); then
+    if STATUS=$(printf '%s' "${CLUSTER_DESCRIPTION}" | jq -er '.clusterStatus' 2>/dev/null); then
+      CONSECUTIVE_STATUS_ERRORS=0
+      LAST_STATUS="${STATUS}"
+    else
+      STATUS="UNKNOWN"
+      DESCRIBE_ERROR="pcluster returned a response without clusterStatus"
+      CONSECUTIVE_STATUS_ERRORS=$((CONSECUTIVE_STATUS_ERRORS + 1))
+    fi
+  else
+    STATUS="UNKNOWN"
+    DESCRIBE_ERROR="${CLUSTER_DESCRIPTION}"
+    CONSECUTIVE_STATUS_ERRORS=$((CONSECUTIVE_STATUS_ERRORS + 1))
+  fi
   TIMESTAMP=$(date '+%H:%M:%S')
+  MONITOR_ELAPSED=$((SECONDS - MONITOR_STARTED_SECONDS))
 
   case "${STATUS}" in
     CREATE_COMPLETE)
       echo ""
       info "Cluster creation complete!"
 
-      CLUSTER_INFO=$("${PCLUSTER}" describe-cluster --cluster-name "${CLUSTER_NAME}" --region "${REGION}")
+      CLUSTER_INFO="${CLUSTER_DESCRIPTION}"
       HEAD_IP=$(echo "${CLUSTER_INFO}" | jq -r '.headNode.privateIpAddress // "N/A"')
       LOGIN_ADDR=$(echo "${CLUSTER_INFO}" | jq -r '.loginNodes[0].address // empty')
 
@@ -823,6 +920,12 @@ while true; do
         echo ""
         echo "  Login Node access (via VPN):"
         echo "    ssh -i ${SSH_KEY_FILE} ec2-user@${LOGIN_ADDR}"
+        if [[ "${ENABLE_DCV}" == "1" ]]; then
+          echo ""
+          echo "  Login Node DCV:"
+          echo "    LOGIN_IP=\$(${PCLUSTER} describe-cluster-instances --cluster-name ${CLUSTER_NAME} --node-type LoginNode --region ${REGION} --query 'instances[0].privateIpAddress' | jq -r .)"
+          echo "    ${PCLUSTER} dcv-connect --cluster-name ${CLUSTER_NAME} --login-node-ip \"\${LOGIN_IP}\" --key-path ${SSH_KEY_FILE} --region ${REGION}"
+        fi
       else
         echo "  Login Node:  (disabled — on-prem client submission)"
         echo ""
@@ -844,13 +947,28 @@ while true; do
       echo -e "${GREEN}${BOLD}Setup complete!${NC}"
       exit 0
       ;;
-    CREATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_IN_PROGRESS|DELETE_*)
+    *_FAILED|ROLLBACK_*|DELETE_*)
       echo ""
       error "Cluster creation failed (status: ${STATUS})\n  ${PCLUSTER} describe-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
       ;;
-    *)
-      echo -ne "\r  [${TIMESTAMP}] Status: ${STATUS}  "
-      sleep 30
-      ;;
   esac
+
+  if ((CONSECUTIVE_STATUS_ERRORS > 0)); then
+    warn "Cluster status lookup failed (${CONSECUTIVE_STATUS_ERRORS}/${CLUSTER_STATUS_ERROR_LIMIT}): ${DESCRIBE_ERROR}"
+    if ((CONSECUTIVE_STATUS_ERRORS >= CLUSTER_STATUS_ERROR_LIMIT)); then
+      error "Unable to determine cluster status after ${CONSECUTIVE_STATUS_ERRORS} consecutive attempts.\n  Last known status: ${LAST_STATUS}\n  ${PCLUSTER} describe-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
+    fi
+  fi
+
+  if ((MONITOR_ELAPSED >= CLUSTER_WAIT_TIMEOUT_SECONDS)); then
+    error "Timed out after ${CLUSTER_WAIT_TIMEOUT_SECONDS}s while waiting for cluster creation.\n  Last known status: ${LAST_STATUS}\n  The cluster was not deleted; inspect it with:\n  ${PCLUSTER} describe-cluster --cluster-name ${CLUSTER_NAME} --region ${REGION}"
+  fi
+
+  SLEEP_SECONDS="${CLUSTER_POLL_INTERVAL_SECONDS}"
+  REMAINING_SECONDS=$((CLUSTER_WAIT_TIMEOUT_SECONDS - MONITOR_ELAPSED))
+  if ((SLEEP_SECONDS > REMAINING_SECONDS)); then
+    SLEEP_SECONDS="${REMAINING_SECONDS}"
+  fi
+  echo -ne "\r  [${TIMESTAMP}] Status: ${STATUS} (${MONITOR_ELAPSED}s/${CLUSTER_WAIT_TIMEOUT_SECONDS}s)  "
+  sleep "${SLEEP_SECONDS}"
 done

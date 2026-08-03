@@ -50,6 +50,7 @@ from aws_cdk import (
     CfnOutput,
 )
 from constructs import Construct
+from cdk.naming import resource_prefix, ssm_path
 
 
 # ─── OpenZFS SINGLE_AZ_HA_2 validation tables ──────────────────────
@@ -98,6 +99,7 @@ class StorageStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         Tags.of(self).add("Project", "eda-cluster")
+        prefix = resource_prefix(self.node)
 
         subnet_id = primary_subnet.subnet_id
         vpc_cidr = vpc.vpc_cidr_block
@@ -149,7 +151,7 @@ class StorageStack(Stack):
 
             oz_key = kms.Key(
                 self, "OpenZfsKey",
-                alias="eda/fsx-openzfs",
+                alias=f"{prefix}/fsx-openzfs",
                 description="Encryption key for EDA FSx OpenZFS",
                 enable_key_rotation=True,
                 removal_policy=RemovalPolicy.RETAIN,
@@ -221,7 +223,7 @@ class StorageStack(Stack):
 
             ssm.StringParameter(
                 self, "SsmOpenZfsDns",
-                parameter_name="/eda/storage/OpenZfsDns",
+                parameter_name=ssm_path(self.node, "storage/OpenZfsDns"),
                 string_value=self.openzfs.attr_dns_name,
             )
             for name, vol in {
@@ -231,7 +233,7 @@ class StorageStack(Stack):
             }.items():
                 ssm.StringParameter(
                     self, f"SsmOz{name}",
-                    parameter_name=f"/eda/storage/{name}",
+                    parameter_name=ssm_path(self.node, f"storage/{name}"),
                     string_value=vol.ref,
                 )
 
@@ -262,7 +264,7 @@ class StorageStack(Stack):
 
             ot_key = kms.Key(
                 self, "OntapKey",
-                alias="eda/fsx-ontap",
+                alias=f"{prefix}/fsx-ontap",
                 description="Encryption key for EDA FSx ONTAP",
                 enable_key_rotation=True,
                 removal_policy=RemovalPolicy.RETAIN,
@@ -344,7 +346,7 @@ class StorageStack(Stack):
 
             ssm.StringParameter(
                 self, "SsmOntapSvmId",
-                parameter_name="/eda/storage/OntapSvmId",
+                parameter_name=ssm_path(self.node, "storage/OntapSvmId"),
                 string_value=self.ontap_svm.attr_storage_virtual_machine_id,
             )
             for name, vol in {
@@ -354,7 +356,7 @@ class StorageStack(Stack):
             }.items():
                 ssm.StringParameter(
                     self, f"Ssm{name}",
-                    parameter_name=f"/eda/storage/{name}",
+                    parameter_name=ssm_path(self.node, f"storage/{name}"),
                     string_value=vol.ref,
                 )
 

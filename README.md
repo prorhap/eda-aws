@@ -30,8 +30,10 @@ Stack names are based on a prefix. Default `STACK_PREFIX=Eda`.
 | `{prefix}LicenseServer` | EC2 + static ENI for the EDA license server (MAC address persistence) |
 | `hpc-cluster` | ParallelCluster (Slurm) stack (created by the pcluster CLI) |
 
-By setting `STACK_PREFIX` differently, multiple environments (e.g., `EdaDev`,
-`EdaProd`) can coexist in the same account.
+For multiple environments in one account, set a unique `STACK_PREFIX` and
+`CLUSTER_NAME` for each. Physical names and SSM paths are prefix-scoped.
+`STACK_PREFIX` must start with a letter, contain only letters, digits, or
+hyphens, and be at most 48 characters.
 
 ---
 
@@ -174,12 +176,13 @@ setup.sh stages:
 | Variable | Default | Meaning |
 |---|---|---|
 | `REGION` | `ap-northeast-2` | Deployment region |
-| `STACK_PREFIX` | `Eda` | CDK stack prefix. Use a different value to keep multiple environments in one account |
+| `STACK_PREFIX` | `Eda` | Prefix for CDK stacks, physical resources, and SSM paths |
 | `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA license server |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended) |
+| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable Login Node DCV and restrict its source network |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
 | `ENABLE_SSM` | `0` | Allow Session Manager access |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | Skip stages |
@@ -219,6 +222,27 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
   NFS-mounted from the Head Node, so **the Head Node's
   `~ec2-user/.ssh/authorized_keys` is shared as-is**.
 - As a result, the pem registered on the Head Node is also valid on the Login Node.
+
+### Login Node DCV (optional)
+
+This project uses ParallelCluster-managed DCV on the Login Node instead of a
+separate DCV EC2 stack. It does not download packages from the internet, and
+license checks use the existing S3 Gateway endpoint.
+
+```bash
+ENABLE_DCV=1 DCV_ALLOWED_IPS=172.16.4.0/24 \
+  VPC_ID=vpc-xxx SUBNET_ID=subnet-xxx ./setup.sh
+
+# Find an actual Login Node private IP, then connect
+LOGIN_IP=$(.pcluster-venv/bin/pcluster describe-cluster-instances \
+  --cluster-name <CLUSTER_NAME> --node-type LoginNode \
+  --region ap-northeast-2 --query 'instances[0].privateIpAddress' | jq -r .)
+
+.pcluster-venv/bin/pcluster dcv-connect --cluster-name <CLUSTER_NAME> \
+  --login-node-ip "$LOGIN_IP" \
+  --key-path ~/.ssh/<KEY_PAIR_NAME>.pem \
+  --region ap-northeast-2
+```
 
 ### Head Node (administration)
 
@@ -375,6 +399,11 @@ needed.
 - Reused Interface endpoints must be available, have private DNS enabled, and
   allow HTTPS from the selected subnet CIDR. Reused Gateway endpoints must be
   available and associated with the selected subnet's route table.
+- VPC endpoints are VPC-scoped shared infrastructure. When multiple prefixed
+  environments use the same VPC, the first Base stack that created an endpoint
+  owns it and later stacks reuse it. Do not delete that owner Base stack while
+  another environment still depends on its endpoints; use a dedicated VPC per
+  environment when independent lifecycle is required.
 - The selected single subnet's Availability Zone must support every Interface
   endpoint that the stack needs to create.
 - If an initial Base, Storage, or License stack creation left a
@@ -396,7 +425,6 @@ needed.
 ```
 eda-aws/
 ├── setup.sh                    # Local one-click deploy script
-├── setup-from-cloudshell.sh    # Deploy script for CloudShell
 ├── create-cluster.sh           # Recreate the cluster only
 ├── config/
 │   ├── default.env             # Default settings
@@ -410,7 +438,6 @@ eda-aws/
 │   │   └── slurm_db_stack.py        # (unused option) Slurm accounting RDS
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
-├── cdk-dcv/                    # (Optional) DCV-related CDK
 ├── architecture_guide.md       # Overall architecture design
 └── parallel_cluster_configuration.md   # ParallelCluster environment and configuration guide
 ```

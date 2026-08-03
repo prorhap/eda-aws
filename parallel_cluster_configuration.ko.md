@@ -875,75 +875,32 @@ LIMIT 20;
 
 ## 13. DCV 원격 데스크톱
 
-EDA GUI 작업(Verdi, DVE 등)을 위한 사용자별 DCV 인스턴스를 별도 CDK 프로젝트(`cdk-dcv/`)로 관리한다.
-Login Node(SSH 잡 제출용)와 DCV 인스턴스(GUI 작업용)는 분리하는 것이 일반적이다.
+EDA GUI 작업(Verdi, DVE 등)은 ParallelCluster 3.15가 Login Node에 설치하고
+관리하는 Amazon DCV를 사용한다. 별도 EC2/CDK 스택과 부팅 중 인터넷 다운로드가
+없어 격리망 구성이 단순해진다.
 
-### 13.1 구조
-
-```
-cdk/       → VPC, FSx, SG → SSM Parameter Store (/eda/network/*, /eda/storage/*)
-cdk-dcv/   → SSM에서 읽어 DCV EC2 인스턴스 생성 (사용자별 독립 스택)
-```
-
-### 13.2 DCV 인스턴스 배포
+### 13.1 활성화
 
 ```bash
-cd cdk-dcv/
-
-# 사용자별 DCV 인스턴스 생성
-./deploy-dcv.sh alice
-./deploy-dcv.sh bob
-./deploy-dcv.sh alice r7i.4xlarge   # 인스턴스 타입 지정 (기본: r7i.2xlarge)
+ENABLE_LOGIN_NODE=1
+ENABLE_DCV=1
+DCV_ALLOWED_IPS="172.16.4.0/24"
 ```
 
-배포 시 자동으로:
-- 메인 CDK의 VPC/Subnet/SG를 SSM에서 참조
-- FSx 볼륨 (`/fsxz/tools`, `/fsxz/work`, `/fsxz/scratch`) NFS 마운트
-- DCV 서버 설치 + GUI 데스크톱 구성
-- SSM Parameter에 인스턴스 ID 기록 (`/eda/dcv/<username>/InstanceId`)
-- EC2 태그에 `User: <username>` 설정
+`DCV_ALLOWED_IPS`는 필수 IPv4 CIDR이며 인터넷 전체 허용값을 사용하지 않는다.
+DCV 라이선스 확인은 이미 생성되는 S3 Gateway Endpoint를 사용한다.
 
-### 13.3 DCV 접속
-
-VPN 경유로 브라우저에서 접속:
-
-```
-https://<private-ip>:8443
-```
-
-DCV 로그인 정보:
-- Username: 배포 시 지정한 사용자명
-- Password: `changeme123` (초기, 첫 로그인 후 변경)
-
-SSH 접속:
-```bash
-ssh -i ~/.ssh/eda-cluster-key.pem ec2-user@<private-ip>
-```
-
-### 13.4 DCV 인스턴스 관리
+### 13.2 접속
 
 ```bash
-# 인스턴스 ID 조회
-INSTANCE_ID=$(aws ssm get-parameter --name /eda/dcv/alice/InstanceId \
-  --query 'Parameter.Value' --output text)
+LOGIN_IP=$(.pcluster-venv/bin/pcluster describe-cluster-instances \
+  --cluster-name <CLUSTER_NAME> --node-type LoginNode \
+  --region ap-northeast-2 --query 'instances[0].privateIpAddress' | jq -r .)
 
-# 정지 (비용 절감)
-aws ec2 stop-instances --instance-ids $INSTANCE_ID
-
-# 시작
-aws ec2 start-instances --instance-ids $INSTANCE_ID
-
-# 전체 DCV 인스턴스 조회
-aws ec2 describe-instances \
-  --filters "Name=tag:User,Values=*" "Name=tag:Name,Values=dcv-*" \
-  --query 'Reservations[].Instances[].{User:Tags[?Key==`User`]|[0].Value,Id:InstanceId,State:State.Name,Ip:PrivateIpAddress}' \
-  --output table
-```
-
-### 13.5 DCV 인스턴스 삭제
-
-```bash
-./destroy-dcv.sh alice
+.pcluster-venv/bin/pcluster dcv-connect --cluster-name <CLUSTER_NAME> \
+  --login-node-ip "$LOGIN_IP" \
+  --key-path ~/.ssh/<KEY_PAIR_NAME>.pem \
+  --region ap-northeast-2
 ```
 
 ---
@@ -966,20 +923,21 @@ aws ec2 describe-instances \
 
 ## 15. SSM Parameter Store 구조
 
-메인 CDK가 배포하는 SSM 파라미터 (DCV 등 외부 프로젝트에서 참조):
+메인 CDK가 배포하는 SSM 파라미터. 경로의 `<resource-prefix>`는
+`STACK_PREFIX`를 소문자로 변환한 값이다 (`Eda` → `eda`,
+`Eda-Prod` → `eda-prod`).
 
 | 파라미터 | 소스 | 용도 |
 |---|---|---|
-| `/eda/network/VpcId` | {prefix}Base | VPC ID |
-| `/eda/network/PrimarySubnetId` | {prefix}Base | Private Subnet ID |
-| `/eda/network/PrimaryAz` | {prefix}Base | Subnet AZ |
-| `/eda/network/SgClusterNodesId` | {prefix}Base | 클러스터 노드 SG |
-| `/eda/network/KeyPairName` | {prefix}Base | SSH 키페어 이름 |
-| `/eda/storage/FsxDns` | EdaStorage | FSx DNS 엔드포인트 |
-| `/eda/storage/VolToolsId` | EdaStorage | /fsxz/tools 볼륨 ID |
-| `/eda/storage/VolWorkId` | EdaStorage | /fsxz/work 볼륨 ID |
-| `/eda/storage/VolScratchId` | EdaStorage | /fsxz/scratch 볼륨 ID |
-| `/eda/dcv/<user>/InstanceId` | cdk-dcv | DCV 인스턴스 ID (사용자별) |
+| `/<resource-prefix>/network/VpcId` | {prefix}Base | VPC ID |
+| `/<resource-prefix>/network/PrimarySubnetId` | {prefix}Base | Private Subnet ID |
+| `/<resource-prefix>/network/PrimaryAz` | {prefix}Base | Subnet AZ |
+| `/<resource-prefix>/network/SgClusterNodesId` | {prefix}Base | 클러스터 노드 SG |
+| `/<resource-prefix>/network/KeyPairName` | {prefix}Base | SSH 키페어 이름 |
+| `/<resource-prefix>/storage/OpenZfsDns` | {prefix}Storage | FSx OpenZFS DNS |
+| `/<resource-prefix>/storage/VolToolsId` | {prefix}Storage | /fsxz/tools 볼륨 ID |
+| `/<resource-prefix>/storage/VolWorkId` | {prefix}Storage | /fsxz/work 볼륨 ID |
+| `/<resource-prefix>/storage/VolScratchId` | {prefix}Storage | /fsxz/scratch 볼륨 ID |
 
 ```bash
 # 전체 파라미터 조회
@@ -994,21 +952,16 @@ aws ssm get-parameters-by-path --path /eda/ --recursive \
 전체 환경을 삭제하고 처음부터 재설치하는 절차:
 
 ```bash
-# 1. DCV 인스턴스 삭제 (있는 경우)
-cd cdk-dcv/
-./destroy-dcv.sh alice
-./destroy-dcv.sh bob
-
-# 2. ParallelCluster 삭제 (10분 소요)
+# 1. ParallelCluster 삭제 (Login Node DCV 포함, 10분 소요)
 pcluster delete-cluster --cluster-name $CLUSTER_NAME
 # "does not exist" 나올 때까지 대기
 watch -n 30 'pcluster describe-cluster --cluster-name $CLUSTER_NAME 2>&1 | head -3'
 
-# 3. CDK 스택 삭제 (FSx 삭제에 20-30분 소요)
+# 2. CDK 스택 삭제
 cd cdk/
 cdk destroy --all
 
-# 4. 재배포
+# 3. 재배포
 cd ..
 ./setup.sh
 ```
@@ -1021,10 +974,9 @@ cd ..
 ## 17. 비용 관리 팁
 
 1. **사용하지 않을 때 compute fleet STOP** — head/login만 유지하면 비용이 크게 줄어든다
-2. **DCV 인스턴스 정지** — 미사용 시 `aws ec2 stop-instances`로 비용 절감
-3. **ScaledownIdletime=15** — idle compute node는 15분 후 자동 종료
-4. **FSx throughput 모니터링** — CloudWatch `NetworkThroughputUtilization`이 지속 50% 이상이면 512→1024 MBps 검토
-5. **야간/주말 잡 없으면** — compute fleet STOP 자동화 고려 (EventBridge + Lambda)
+2. **ScaledownIdletime=15** — idle compute node는 15분 후 자동 종료
+3. **FSx throughput 모니터링** — CloudWatch `NetworkThroughputUtilization`이 지속 50% 이상이면 상향 검토
+4. **야간/주말 잡 없으면** — compute fleet STOP 자동화 고려 (EventBridge + Lambda)
 
 ---
 

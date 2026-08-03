@@ -110,8 +110,12 @@ injects these values into the neutral placeholders (`${BASE.*}`,
 - **RemovalPolicy.RETAIN**: FSx file systems/volumes, the CloudTrail bucket,
   and the KMS key retain for data preservation. Delete manually after stack
   deletion if needed.
-- **Stack prefix change**: Changing `eda:stack_prefix` causes CloudFormation
-  to see it as **a new stack**, so the existing stack (other prefix) must be
-  deleted separately. Resources that need to be unique within the account
-  (FSx, KeyPair) may collide — when using per-environment prefixes, also
-  vary `eda:key_pair_name` etc.
+- **Stack prefix isolation**: `eda:stack_prefix` scopes physical KeyPair,
+  CloudTrail, KMS alias, and SSM Parameter names in addition to stack names.
+  The default `Eda` keeps `/eda/...`; `EdaProd` uses `/edaprod/...`. A prefix
+  must start with a letter, use only letters, digits, or hyphens, and be at
+  most 48 characters.
+- **Shared endpoint lifecycle**: VPC endpoints are VPC-scoped. If multiple
+  prefixed environments share a VPC, later Base stacks reuse endpoints owned
+  by the first Base stack. Keep that owner stack until all dependent
+  environments are removed, or use separate VPCs for independent lifecycle.

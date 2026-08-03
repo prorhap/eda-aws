@@ -897,76 +897,31 @@ LIMIT 20;
 
 ## 13. DCV remote desktop
 
-Per-user DCV instances for EDA GUI work (Verdi, DVE, etc.) are managed by a
-separate CDK project (`cdk-dcv/`). It is common to keep the Login Node
-(SSH job submission) and the DCV instances (GUI work) separate.
+EDA GUI work uses DCV installed and managed by ParallelCluster 3.15 on the
+Login Node. There is no separate EC2/CDK stack or internet download at boot.
 
-### 13.1 Structure
-
-```
-cdk/       → VPC, FSx, SG → SSM Parameter Store (/eda/network/*, /eda/storage/*)
-cdk-dcv/   → Reads from SSM and creates DCV EC2 instances (per-user independent stacks)
-```
-
-### 13.2 Deploy a DCV instance
+### 13.1 Enable
 
 ```bash
-cd cdk-dcv/
-
-# Per-user DCV instance creation
-./deploy-dcv.sh alice
-./deploy-dcv.sh bob
-./deploy-dcv.sh alice r7i.4xlarge   # specify instance type (default: r7i.2xlarge)
+ENABLE_LOGIN_NODE=1
+ENABLE_DCV=1
+DCV_ALLOWED_IPS="172.16.4.0/24"
 ```
 
-Deployment automatically:
-- References the main CDK's VPC/Subnet/SG via SSM
-- NFS-mounts FSx volumes (`/fsxz/tools`, `/fsxz/work`, `/fsxz/scratch`)
-- Installs the DCV server + sets up the GUI desktop
-- Records the instance ID into SSM Parameter (`/eda/dcv/<username>/InstanceId`)
-- Sets the EC2 tag `User: <username>`
+`DCV_ALLOWED_IPS` is a required IPv4 CIDR. DCV licensing uses the existing
+S3 Gateway endpoint.
 
-### 13.3 Connect to DCV
-
-Connect via VPN in your browser:
-
-```
-https://<private-ip>:8443
-```
-
-DCV login info:
-- Username: the user name specified at deployment
-- Password: `changeme123` (initial; change after first login)
-
-SSH:
-```bash
-ssh -i ~/.ssh/eda-cluster-key.pem ec2-user@<private-ip>
-```
-
-### 13.4 Manage DCV instances
+### 13.2 Connect
 
 ```bash
-# Look up instance ID
-INSTANCE_ID=$(aws ssm get-parameter --name /eda/dcv/alice/InstanceId \
-  --query 'Parameter.Value' --output text)
+LOGIN_IP=$(.pcluster-venv/bin/pcluster describe-cluster-instances \
+  --cluster-name <CLUSTER_NAME> --node-type LoginNode \
+  --region ap-northeast-2 --query 'instances[0].privateIpAddress' | jq -r .)
 
-# Stop (cost saving)
-aws ec2 stop-instances --instance-ids $INSTANCE_ID
-
-# Start
-aws ec2 start-instances --instance-ids $INSTANCE_ID
-
-# List all DCV instances
-aws ec2 describe-instances \
-  --filters "Name=tag:User,Values=*" "Name=tag:Name,Values=dcv-*" \
-  --query 'Reservations[].Instances[].{User:Tags[?Key==`User`]|[0].Value,Id:InstanceId,State:State.Name,Ip:PrivateIpAddress}' \
-  --output table
-```
-
-### 13.5 Delete a DCV instance
-
-```bash
-./destroy-dcv.sh alice
+.pcluster-venv/bin/pcluster dcv-connect --cluster-name <CLUSTER_NAME> \
+  --login-node-ip "$LOGIN_IP" \
+  --key-path ~/.ssh/<KEY_PAIR_NAME>.pem \
+  --region ap-northeast-2
 ```
 
 ---
@@ -990,21 +945,20 @@ Project settings configurable in `cdk/cdk.json`:
 
 ## 15. SSM Parameter Store layout
 
-SSM parameters published by the main CDK (referenced by external projects
-like DCV):
+SSM paths use the lowercase form of `STACK_PREFIX` (`Eda` → `eda`,
+`Eda-Prod` → `eda-prod`):
 
 | Parameter | Source | Use |
 |---|---|---|
-| `/eda/network/VpcId` | {prefix}Base | VPC ID |
-| `/eda/network/PrimarySubnetId` | {prefix}Base | Private subnet ID |
-| `/eda/network/PrimaryAz` | {prefix}Base | Subnet AZ |
-| `/eda/network/SgClusterNodesId` | {prefix}Base | Cluster node SG |
-| `/eda/network/KeyPairName` | {prefix}Base | SSH KeyPair name |
-| `/eda/storage/FsxDns` | EdaStorage | FSx DNS endpoint |
-| `/eda/storage/VolToolsId` | EdaStorage | /fsxz/tools volume ID |
-| `/eda/storage/VolWorkId` | EdaStorage | /fsxz/work volume ID |
-| `/eda/storage/VolScratchId` | EdaStorage | /fsxz/scratch volume ID |
-| `/eda/dcv/<user>/InstanceId` | cdk-dcv | DCV instance ID (per user) |
+| `/<resource-prefix>/network/VpcId` | {prefix}Base | VPC ID |
+| `/<resource-prefix>/network/PrimarySubnetId` | {prefix}Base | Private subnet ID |
+| `/<resource-prefix>/network/PrimaryAz` | {prefix}Base | Subnet AZ |
+| `/<resource-prefix>/network/SgClusterNodesId` | {prefix}Base | Cluster node SG |
+| `/<resource-prefix>/network/KeyPairName` | {prefix}Base | SSH KeyPair name |
+| `/<resource-prefix>/storage/OpenZfsDns` | {prefix}Storage | OpenZFS DNS |
+| `/<resource-prefix>/storage/VolToolsId` | {prefix}Storage | /fsxz/tools volume ID |
+| `/<resource-prefix>/storage/VolWorkId` | {prefix}Storage | /fsxz/work volume ID |
+| `/<resource-prefix>/storage/VolScratchId` | {prefix}Storage | /fsxz/scratch volume ID |
 
 ```bash
 # List all parameters
@@ -1019,21 +973,16 @@ aws ssm get-parameters-by-path --path /eda/ --recursive \
 Procedure to remove the entire environment and reinstall from scratch:
 
 ```bash
-# 1. Delete DCV instances (if any)
-cd cdk-dcv/
-./destroy-dcv.sh alice
-./destroy-dcv.sh bob
-
-# 2. Delete the ParallelCluster (~10 min)
+# 1. Delete ParallelCluster, including Login Node DCV (~10 min)
 pcluster delete-cluster --cluster-name $CLUSTER_NAME
 # Wait until "does not exist"
 watch -n 30 'pcluster describe-cluster --cluster-name $CLUSTER_NAME 2>&1 | head -3'
 
-# 3. Delete CDK stacks (FSx deletion takes 20–30 min)
+# 2. Delete CDK stacks
 cd cdk/
 cdk destroy --all
 
-# 4. Redeploy
+# 3. Redeploy
 cd ..
 ./setup.sh
 ```
@@ -1048,11 +997,10 @@ cd ..
 
 1. **Stop the compute fleet when not in use** — keeping only head/login
    greatly reduces cost
-2. **Stop DCV instances** — save cost when idle with `aws ec2 stop-instances`
-3. **ScaledownIdletime=15** — idle compute nodes auto-terminate after 15 min
-4. **Monitor FSx throughput** — if CloudWatch
-   `NetworkThroughputUtilization` stays above 50%, consider 512 → 1024 MBps
-5. **No nighttime / weekend jobs** — automate compute fleet STOP via
+2. **ScaledownIdletime=15** — idle compute nodes auto-terminate after 15 min
+3. **Monitor FSx throughput** — if CloudWatch
+   `NetworkThroughputUtilization` stays above 50%, consider increasing it
+4. **No nighttime / weekend jobs** — automate compute fleet STOP via
    EventBridge + Lambda
 
 ---

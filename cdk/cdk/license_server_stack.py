@@ -44,6 +44,7 @@ from aws_cdk import (
     CfnOutput,
 )
 from constructs import Construct
+from cdk.naming import resource_prefix, ssm_path
 
 
 class LicenseServerStack(Stack):
@@ -62,6 +63,7 @@ class LicenseServerStack(Stack):
 
         Tags.of(self).add("Project", "eda-cluster")
         Tags.of(self).add("Role", "license-server")
+        prefix = resource_prefix(self.node)
 
         instance_type = (
             self.node.try_get_context("eda:license_instance_type") or "m7i.large"
@@ -98,7 +100,7 @@ class LicenseServerStack(Stack):
         # ── SSH Key Pair (전용) ───────────────────────────────
         key_pair_name = (
             self.node.try_get_context("eda:license_key_pair_name")
-            or f"eda-license-key-{Stack.of(self).account}"
+            or f"{prefix}-license-key-{Stack.of(self).account}"
         )
         self.key_pair = ec2.KeyPair(
             self, "LicenseKeyPair",
@@ -204,6 +206,6 @@ class LicenseServerStack(Stack):
         }.items():
             ssm.StringParameter(
                 self, f"SsmLicense{name}",
-                parameter_name=f"/eda/license/{name}",
+                parameter_name=ssm_path(self.node, f"license/{name}"),
                 string_value=value,
             )

@@ -102,7 +102,11 @@ Outputs는 `cdk deploy --outputs-file outputs.json` 으로 받고, setup.sh는 �
   생성할 각 Interface endpoint를 지원하는지도 synth 전에 검사합니다.
 - **RemovalPolicy.RETAIN**: FSx 파일시스템/볼륨, CloudTrail 버킷·KMS는 데이터 보존을
   위해 retain입니다. 스택 삭제 후 필요시 수동으로 지워야 합니다.
-- **Stack prefix 변경**: `eda:stack_prefix`를 바꾸면 CloudFormation 상에서 **새 스택**
-  으로 인식되므로, 기존 스택(다른 prefix)은 별도로 삭제해야 합니다. FSx나 KeyPair 같이
-  계정 내 고유해야 하는 리소스는 중복 충돌 가능 — 환경별 prefix를 쓸 때는
-  `eda:key_pair_name` 등도 함께 다르게 지정하세요.
+- **Stack prefix 격리**: `eda:stack_prefix`는 스택 이름뿐 아니라 KeyPair,
+  CloudTrail, KMS alias, SSM Parameter 경로에도 적용됩니다. 기본 `Eda`는 기존
+  `/eda/...` 경로를 유지하고, `EdaProd`는 `/edaprod/...`를 사용합니다. prefix는
+  영문자로 시작하고 영문자·숫자·하이픈만 사용할 수 있으며 최대 48자입니다.
+- **공유 endpoint 수명주기**: VPC endpoint는 VPC 단위 리소스입니다. 같은 VPC의
+  후속 prefix 환경은 첫 Base 스택이 소유한 endpoint를 재사용합니다. 모든 의존
+  환경을 제거하기 전에는 해당 소유 스택을 유지하거나, 독립 수명주기가 필요하면
+  환경별 VPC를 사용합니다.

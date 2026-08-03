@@ -41,6 +41,7 @@ from aws_cdk import (
     CfnOutput,
 )
 from constructs import Construct
+from cdk.naming import resource_prefix, ssm_path
 
 
 # ParallelCluster가 private subnet에서 동작하기 위해 필요한 VPC Endpoint
@@ -56,6 +57,7 @@ class BaseStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         Tags.of(self).add("Project", "eda-cluster")
+        prefix = resource_prefix(self.node)
 
         # ── 기존 VPC / Subnet import ─────────────────────────
         vpc_id = self.node.try_get_context("eda:vpc_id")
@@ -150,7 +152,7 @@ class BaseStack(Stack):
         # 계정 내 유니크 보장 위해 context로 override 가능 (default: eda-cluster-key-{account})
         key_pair_name = (
             self.node.try_get_context("eda:key_pair_name")
-            or f"eda-cluster-key-{Stack.of(self).account}"
+            or f"{prefix}-cluster-key-{Stack.of(self).account}"
         )
         self.key_pair = ec2.KeyPair(
             self, "EdaKeyPair",
@@ -161,7 +163,7 @@ class BaseStack(Stack):
         # ── CloudTrail ───────────────────────────────────────
         trail_key = kms.Key(
             self, "TrailKey",
-            alias="eda/cloudtrail",
+            alias=f"{prefix}/cloudtrail",
             description="Encryption key for EDA CloudTrail logs",
             enable_key_rotation=True,
             removal_policy=RemovalPolicy.RETAIN,
@@ -173,7 +175,7 @@ class BaseStack(Stack):
             resources=["*"],
             conditions={
                 "StringEquals": {
-                    "AWS:SourceArn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/eda-trail",
+                    "AWS:SourceArn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/{prefix}-trail",
                 },
                 "StringLike": {
                     "kms:EncryptionContext:aws:cloudtrail:arn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/*",
@@ -209,7 +211,7 @@ class BaseStack(Stack):
 
         cloudtrail.Trail(
             self, "EdaTrail",
-            trail_name="eda-trail",
+            trail_name=f"{prefix}-trail",
             bucket=trail_bucket,
             encryption_key=trail_key,
             is_multi_region_trail=False,
@@ -250,7 +252,7 @@ class BaseStack(Stack):
         }.items():
             ssm.StringParameter(
                 self, f"Ssm{name}",
-                parameter_name=f"/eda/network/{name}",
+                parameter_name=ssm_path(self.node, f"network/{name}"),
                 string_value=value,
             )
 
@@ -334,7 +336,7 @@ class BaseStack(Stack):
                 security_group_ids=[self.sg_vpce.security_group_id],
                 private_dns_enabled=True,
             )
-            Tags.of(ep).add("Name", f"eda-vpce-{short}")
+            Tags.of(ep).add("Name", f"{resource_prefix(self.node)}-vpce-{short}")
             created_interface.append(short)
 
         # Gateway endpoints (S3, DynamoDB) — route table에 바인딩
@@ -361,7 +363,7 @@ class BaseStack(Stack):
                 vpc_endpoint_type="Gateway",
                 route_table_ids=[self.primary_route_table_id],
             )
-            Tags.of(ep).add("Name", f"eda-vpce-{short}")
+            Tags.of(ep).add("Name", f"{resource_prefix(self.node)}-vpce-{short}")
             created_gateway.append(short)
 
         # Outputs

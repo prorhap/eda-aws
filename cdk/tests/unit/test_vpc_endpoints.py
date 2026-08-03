@@ -348,6 +348,7 @@ def test_base_stack_synth_reuses_external_endpoints(
 
     app = cdk.App(
         context={
+            "eda:stack_prefix": "EdaProd",
             "eda:vpc_id": "vpc-123",
             "eda:subnet_id": "subnet-123",
             "eda:enable_ssm": enable_ssm,
@@ -376,6 +377,18 @@ def test_base_stack_synth_reuses_external_endpoints(
 
     assert len(interface_resources) == expected_interface_count
     assert len(gateway_resources) == 1
+    template.has_resource_properties(
+        "AWS::EC2::KeyPair",
+        {"KeyName": "edaprod-cluster-key-111111111111"},
+    )
+    template.has_resource_properties(
+        "AWS::CloudTrail::Trail",
+        {"TrailName": "edaprod-trail"},
+    )
+    template.has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/edaprod/network/VpcId"},
+    )
     template.has_output(
         "SkippedInterfaceEndpoints",
         {"Value": "logs"},

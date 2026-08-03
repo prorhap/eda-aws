@@ -27,8 +27,10 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 | `{prefix}LicenseServer` | EDA 라이센스 서버용 EC2 + static ENI (MAC 영속성) |
 | `hpc-cluster` | ParallelCluster (Slurm) 스택 (pcluster CLI가 생성) |
 
-`STACK_PREFIX`를 다르게 설정하면 같은 계정에 여러 환경 (`EdaDev`, `EdaProd` 등)을
-공존시킬 수 있습니다.
+같은 계정에 여러 환경을 둘 때는 `STACK_PREFIX`와 `CLUSTER_NAME`을 환경별로
+다르게 설정합니다. 물리 리소스 이름과 SSM 경로도 prefix별로 격리됩니다.
+`STACK_PREFIX`는 영문자로 시작하고 영문자·숫자·하이픈만 사용할 수 있으며
+최대 48자입니다.
 
 ---
 
@@ -169,12 +171,13 @@ setup.sh 단계:
 | 변수 | 기본 | 의미 |
 |---|---|---|
 | `REGION` | `ap-northeast-2` | 배포 리전 |
-| `STACK_PREFIX` | `Eda` | CDK 스택 접두사. 같은 계정에 여러 환경 두려면 다르게 설정 |
+| `STACK_PREFIX` | `Eda` | CDK 스택·물리 리소스·SSM 경로 접두사 |
 | `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA 라이센스 서버 |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장) |
+| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | Login Node DCV 활성화 및 접속 허용망 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
 | `ENABLE_SSM` | `0` | Session Manager 접속 허용 |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | 단계 건너뛰기 |
@@ -211,6 +214,27 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 - Login Node EC2 자체에는 KeyPair가 붙지 않지만, `/home`이 Head Node에서 NFS로
   마운트되어 **Head Node의 `~ec2-user/.ssh/authorized_keys`가 그대로 공유**됩니다.
 - 결과적으로 Head Node에 등록된 pem이 Login Node에서도 동일하게 유효합니다.
+
+### Login Node DCV (선택)
+
+별도 DCV EC2 스택 없이 ParallelCluster가 Login Node에 설치하는 DCV를 사용합니다.
+격리망에서 외부 패키지를 다운로드하지 않으며, 라이선스 확인은 기존 S3 Gateway
+Endpoint를 사용합니다.
+
+```bash
+ENABLE_DCV=1 DCV_ALLOWED_IPS=172.16.4.0/24 \
+  VPC_ID=vpc-xxx SUBNET_ID=subnet-xxx ./setup.sh
+
+# 실제 Login Node private IP를 조회한 뒤 접속
+LOGIN_IP=$(.pcluster-venv/bin/pcluster describe-cluster-instances \
+  --cluster-name <CLUSTER_NAME> --node-type LoginNode \
+  --region ap-northeast-2 --query 'instances[0].privateIpAddress' | jq -r .)
+
+.pcluster-venv/bin/pcluster dcv-connect --cluster-name <CLUSTER_NAME> \
+  --login-node-ip "$LOGIN_IP" \
+  --key-path ~/.ssh/<KEY_PAIR_NAME>.pem \
+  --region ap-northeast-2
+```
 
 ### Head Node 
 
@@ -360,6 +384,10 @@ FSx 파일시스템, CloudTrail S3 버킷, KMS 키는 실수 방지를 위해 re
 - 재사용할 Interface endpoint는 available 상태, Private DNS 활성화, 선택 subnet
   CIDR의 HTTPS 허용이 필요합니다. Gateway endpoint는 선택 subnet의 route table에
   연결되어 있어야 합니다.
+- VPC endpoint는 VPC 단위의 공유 인프라입니다. 같은 VPC에 여러 prefix 환경을
+  배포하면 endpoint를 처음 생성한 Base 스택이 소유하고 후속 스택은 재사용합니다.
+  다른 환경이 해당 endpoint를 사용 중일 때 소유 Base 스택을 삭제하면 안 됩니다.
+  환경별 독립 삭제가 필요하면 VPC도 분리합니다.
 - 선택한 단일 subnet의 AZ가 새로 생성할 모든 Interface endpoint를 지원해야 합니다.
 - 최초 Base, Storage, License 스택 생성 실패로 `ROLLBACK_COMPLETE` 또는
   `CREATE_FAILED` 스택이 남으면 `setup.sh`가 해당 실패 스택을 삭제한 뒤
@@ -377,7 +405,6 @@ FSx 파일시스템, CloudTrail S3 버킷, KMS 키는 실수 방지를 위해 re
 ```
 eda-aws/
 ├── setup.sh                    # 로컬 원클릭 배포 스크립트
-├── setup-from-cloudshell.sh    # CloudShell용 배포 스크립트
 ├── create-cluster.sh           # 클러스터만 재생성할 때
 ├── config/
 │   ├── default.env             # 기본 설정
@@ -391,7 +418,6 @@ eda-aws/
 │   │   └── slurm_db_stack.py        # (미사용 옵션) Slurm accounting RDS
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
-├── cdk-dcv/                    # (선택) DCV 관련 CDK
 ├── architecture_guide.md       # 전체 아키텍처 설계
 └── parallel_cluster_configuration.md   # ParallelCluster 환경 구성 및 설정 가이드
 ```

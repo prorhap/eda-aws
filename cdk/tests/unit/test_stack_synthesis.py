@@ -79,6 +79,36 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
     )
 
 
+def test_storage_resources_are_scoped_by_stack_prefix():
+    app = cdk.App(
+        context={
+            "eda:stack_prefix": "EdaProd",
+            "eda:enable_openzfs": True,
+            "eda:enable_ontap": False,
+        }
+    )
+    vpc, subnet, _, fsx_sg, ontap_sg = imported_network(app)
+    stack = StorageStack(
+        app,
+        "EdaProdStorage",
+        vpc=vpc,
+        sg_fsx=fsx_sg,
+        sg_ontap=ontap_sg,
+        primary_subnet=subnet,
+        env=ENV,
+    )
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties(
+        "AWS::KMS::Alias",
+        {"AliasName": "alias/edaprod/fsx-openzfs"},
+    )
+    template.has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/edaprod/storage/OpenZfsDns"},
+    )
+
+
 def test_ontap_secret_uses_generated_name_for_reinstall():
     app = cdk.App(
         context={
@@ -138,4 +168,36 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
                 }
             ]
         },
+    )
+
+
+def test_license_resources_are_scoped_by_stack_prefix(monkeypatch):
+    monkeypatch.setattr(
+        ec2.MachineImage,
+        "lookup",
+        staticmethod(
+            lambda **kwargs: ec2.MachineImage.generic_linux(
+                {"ap-northeast-2": "ami-0123456789abcdef0"}
+            )
+        ),
+    )
+    app = cdk.App(context={"eda:stack_prefix": "EdaProd"})
+    vpc, subnet, cluster_sg, _, _ = imported_network(app)
+    stack = LicenseServerStack(
+        app,
+        "EdaProdLicenseServer",
+        vpc=vpc,
+        sg_cluster_nodes=cluster_sg,
+        primary_subnet=subnet,
+        env=ENV,
+    )
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties(
+        "AWS::EC2::KeyPair",
+        {"KeyName": "edaprod-license-key-111111111111"},
+    )
+    template.has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/edaprod/license/InstanceId"},
     )
