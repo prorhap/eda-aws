@@ -2,6 +2,10 @@
 
 EDA 라이센스 서버용 EC2 인스턴스 생성.
 
+기본 운영 모델은 Synopsys floating license(SCL/FlexNet)이며, lmgrd 포트
+27000과 snpslmd vendor daemon 포트 27020을 사용한다. 다른 벤더를 사용할
+경우 context로 두 포트를 변경할 수 있다.
+
 설계 포인트:
   - ENI를 명시 생성해서 EC2에 attach → instance 교체 시에도 MAC/private IP 보존
     (라이센스가 Host ID = MAC address에 bind되는 경우 재발급 방지)
@@ -12,9 +16,9 @@ EDA 라이센스 서버용 EC2 인스턴스 생성.
   - Security Group:
       Ingress:
         * TCP 22       from VPC CIDR (VPN 경유 SSH)
-        * TCP 27000    from sg_cluster_nodes (license manager main port)
-        * TCP 27020    from sg_cluster_nodes (vendor daemon port)
-          → 라이선스 파일에 vendor 포트를 27020으로 고정하는 것을 전제
+        * TCP 27000    from sg_cluster_nodes (default lmgrd port)
+        * TCP 27020    from sg_cluster_nodes (default snpslmd port)
+          → 실제 라이선스 파일에도 동일한 manager/vendor 포트를 고정
   - Root EBS: 30 GiB gp3, KMS 암호화
   - user_data: 없음
   - EBS snapshot: 없음
@@ -22,9 +26,11 @@ EDA 라이센스 서버용 EC2 인스턴스 생성.
 생성 후 운영자 작업:
   1. scripts/get-license-server-key.sh 로 pem 다운로드
   2. ssh -i ~/.ssh/eda-license-key-<account>.pem ec2-user@<private-ip>
-  3. 필요한 32bit 라이브러리 설치:
+  3. (선택) 벤더 문서가 32bit runtime을 요구할 때만 관련 라이브러리 설치:
      sudo dnf -y install glibc.i686 libstdc++.i686 libX11.i686 libXext.i686 \\
                           libXrender.i686 libgcc.i686 ncurses-libs.i686 lsof
+     이 명령은 AWS 스택 배포 필수조건이 아니며, 격리망에서는 사용 가능한
+     내부 RPM 저장소 또는 오프라인 패키지가 있어야 함.
   4. 벤더 라이선스 매니저 + 라이선스 파일 배치 + 데몬 기동
 
 필수 context:
@@ -32,6 +38,8 @@ EDA 라이센스 서버용 EC2 인스턴스 생성.
   - eda:subnet_id
 옵션:
   - eda:license_instance_type   (default: m7i.large)
+  - eda:license_manager_port    (default: 27000)
+  - eda:license_vendor_port     (default: 27020)
   - eda:license_key_pair_name   (default: eda-license-key-{account})
 """
 
@@ -68,6 +76,12 @@ class LicenseServerStack(Stack):
         instance_type = (
             self.node.try_get_context("eda:license_instance_type") or "m7i.large"
         )
+        manager_port = self._ctx_port("eda:license_manager_port", 27000)
+        vendor_port = self._ctx_port("eda:license_vendor_port", 27020)
+        if manager_port == vendor_port:
+            raise ValueError(
+                "eda:license_manager_port and eda:license_vendor_port must differ"
+            )
 
         # ── Security Group ────────────────────────────────────
         self.sg_license = ec2.SecurityGroup(
@@ -88,13 +102,13 @@ class LicenseServerStack(Stack):
         # License manager main + vendor daemon — cluster node에서만
         self.sg_license.add_ingress_rule(
             sg_cluster_nodes,
-            ec2.Port.tcp(27000),
-            "License manager main port from cluster",
+            ec2.Port.tcp(manager_port),
+            "License manager (lmgrd) port from cluster",
         )
         self.sg_license.add_ingress_rule(
             sg_cluster_nodes,
-            ec2.Port.tcp(27020),
-            "License vendor daemon port from cluster",
+            ec2.Port.tcp(vendor_port),
+            "License vendor daemon (snpslmd by default) port from cluster",
         )
 
         # ── SSH Key Pair (전용) ───────────────────────────────
@@ -178,8 +192,10 @@ class LicenseServerStack(Stack):
         CfnOutput(
             self, "LicensePrivateIp",
             value=self.eni.attr_primary_private_ip_address,
-            description="Use: export LM_LICENSE_FILE=27000@<this-ip>",
+            description=f"Use: export LM_LICENSE_FILE={manager_port}@<this-ip>",
         )
+        CfnOutput(self, "LicenseManagerPort", value=str(manager_port))
+        CfnOutput(self, "LicenseVendorPort", value=str(vendor_port))
         CfnOutput(
             self, "LicenseMacHint",
             value=(
@@ -203,9 +219,21 @@ class LicenseServerStack(Stack):
             "PrivateIp": self.eni.attr_primary_private_ip_address,
             "KeyPairName": self.key_pair.key_pair_name,
             "SgId": self.sg_license.security_group_id,
+            "ManagerPort": str(manager_port),
+            "VendorPort": str(vendor_port),
         }.items():
             ssm.StringParameter(
                 self, f"SsmLicense{name}",
                 parameter_name=ssm_path(self.node, f"license/{name}"),
                 string_value=value,
             )
+
+    def _ctx_port(self, key: str, default: int) -> int:
+        value = self.node.try_get_context(key)
+        try:
+            port = int(value) if value is not None else default
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer TCP port") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError(f"{key} must be between 1 and 65535")
+        return port

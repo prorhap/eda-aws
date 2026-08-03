@@ -57,7 +57,7 @@ flowchart LR
                     NS["/fsxn/scratch"]
                 end
 
-                LIC["EDA License Server (optional)<br/>m7i.large"]
+                LIC["EDA License Server (required)<br/>m7i.large"]
             end
         end
     end
@@ -148,10 +148,11 @@ When ONTAP is added, the recommended role split is:
 
 ---
 
-## 5. EDA license server (optional)
+## 5. EDA license server (required)
 
-Hosting the license server inside AWS avoids VPN latency (10–30 ms) and
-removes the dependency on the on-prem VPN.
+Every deployment creates a dedicated license server inside AWS. The default
+operating model is a Synopsys SCL/FlexNet floating license server, avoiding
+license checkout latency and dependency on the on-prem VPN.
 
 ### 5.1 Configuration
 
@@ -163,20 +164,22 @@ removes the dependency on the on-prem VPN.
 | Network | Static ENI detached up front → MAC address persists across EC2 replacement |
 | SSH key | Dedicated KeyPair (`eda-license-key-{account}`) |
 | IAM | `AmazonSSMManagedInstanceCore`, `CloudWatchAgentServerPolicy` |
+| Default license model | Synopsys SCL/FlexNet floating license |
+| Default ports | `lmgrd` TCP 27000, fixed `snpslmd` TCP 27020 |
 
 ### 5.2 Security group
 
 | Direction | Port | Source | Use |
 |---|---|---|---|
 | Ingress | TCP 22 | 0.0.0.0/0 | SSH (private subnet, only reachable via VPN) |
-| Ingress | TCP 27000 | `sg_cluster_nodes` | License manager main port |
-| Ingress | TCP 27020 | `sg_cluster_nodes` | License vendor daemon port |
+| Ingress | TCP 27000 | `sg_cluster_nodes` | `lmgrd` manager port (configurable) |
+| Ingress | TCP 27020 | `sg_cluster_nodes` | `snpslmd` vendor port (configurable) |
 
 The license file **must pin the vendor port** to keep the SG boundary simple.
 
 ```
 SERVER <hostname> <MAC> 27000
-VENDOR <vendor_daemon> PORT=27020
+VENDOR snpslmd PORT=27020
 USE_SERVER
 ```
 
@@ -188,21 +191,25 @@ operator then performs the following manually:
 1. Submit the printed MAC address to the EDA tool vendor → receive license file
 2. SSH (via VPN):
    `ssh -i ~/.ssh/eda-license-key-<account>.pem ec2-user@<private-ip>`
-3. Install 32-bit libraries:
+3. Optional: only if the vendor documentation requires a 32-bit runtime, install
+   the corresponding libraries:
    ```
    sudo dnf -y install glibc.i686 libstdc++.i686 libX11.i686 \
        libXext.i686 libXrender.i686 libgcc.i686 ncurses-libs.i686 lsof
    ```
-4. Install the vendor license manager binaries (e.g., `/opt/eda/<vendor>/...`)
+   This is not an AWS stack deployment requirement. In an isolated network, the
+   command requires an available internal RPM repository or offline packages.
+4. Install Synopsys SCL or the selected vendor's license manager binaries
 5. Place the license file (e.g., `/opt/eda/<vendor>/licenses/license.dat`)
 6. Start the vendor license daemon
 7. On the cluster, set `export LM_LICENSE_FILE=27000@<private-ip>`
 
-### 5.4 Reusing on-prem servers
+### 5.4 Other license vendors
 
-When reusing an existing on-prem license server, disable this option. No
-license re-issue needed and no cost. Trade-offs: dependency on the VPN
-tunnel + added latency.
+The EC2 license server remains mandatory when another FlexNet-compatible vendor
+is used. Set `LICENSE_MANAGER_PORT` and `LICENSE_VENDOR_PORT` to the ports fixed
+in that vendor's license file. Only those configured ports are opened from the
+cluster security group.
 
 ---
 
@@ -372,7 +379,7 @@ Benefits of keeping the Login Node:
 | Head Node | `m7i.xlarge` | 1 |
 | Login Node | `r7i.2xlarge` | 1 |
 | Compute | `r8i.32xlarge` | 0–2 |
-| License server (optional) | `m7i.large` | 1 |
+| License server (required) | `m7i.large` | 1 |
 
 ### Storage
 
@@ -411,7 +418,9 @@ OPENZFS_SIZE_GIB=10240
 OPENZFS_THROUGHPUT=2560
 
 ENABLE_ONTAP=0
-ENABLE_LICENSE_SERVER=1
+LICENSE_INSTANCE_TYPE="m7i.large"
+LICENSE_MANAGER_PORT=27000
+LICENSE_VENDOR_PORT=27020
 ENABLE_LOGIN_NODE=1
 ENABLE_VPC_ENDPOINTS=1
 ```
@@ -440,8 +449,9 @@ applies.
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP capacity (1,024 – 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | Throughput per HA pair (1536 / 3072 / 6144) |
 | `ONTAP_HA_PAIRS` | `1` | Number of HA pairs (1 – 12) |
-| `ENABLE_LICENSE_SERVER` | `1` | Whether to create the EDA license server EC2 |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | License server instance type |
+| `LICENSE_MANAGER_PORT` | `27000` | Manager port (`lmgrd` by default) |
+| `LICENSE_VENDOR_PORT` | `27020` | Fixed vendor daemon port (`snpslmd` by default) |
 | `ENABLE_LOGIN_NODE` | `1` | Whether to create the Login Node |
 | `ENABLE_SSM` | `0` | Enable SSM Session Manager |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required VPC endpoints |
@@ -514,14 +524,12 @@ flowchart TD
 
 | Configuration | Amount (USD) |
 |---|---:|
-| Minimum (OpenZFS only, Compute 50% utilization) | ~$3,100 |
-| Default + license server | ~$3,180 |
+| Default (OpenZFS + required license server, Compute 50% utilization) | ~$3,180 |
 | Full options (ONTAP included) | ~$7,700 |
 
 Major savings:
 
 - Remove Login Node (on-prem submission): -$460
-- Reuse on-prem license server: -$78
 - Compute on Spot: -50% (~ -$1,200)
 - OpenZFS throughput 2560 → 1280: ~30% storage cost savings
 

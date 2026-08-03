@@ -24,7 +24,7 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 |---|---|
 | `{prefix}Base` | Security Groups (cluster/FSx/ONTAP + VPC endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + 필요 시 elasticloadbalancing/autoscaling) |
 | `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` 볼륨) 또는 FSx ONTAP |
-| `{prefix}LicenseServer` | EDA 라이센스 서버용 EC2 + static ENI (MAC 영속성) |
+| `{prefix}LicenseServer` | 항상 배포되는 EDA 라이센스 서버용 EC2 + static ENI (MAC 영속성) |
 | `hpc-cluster` | ParallelCluster (Slurm) 스택 (pcluster CLI가 생성) |
 
 같은 계정에 여러 환경을 둘 때는 `STACK_PREFIX`와 `CLUSTER_NAME`을 환경별로
@@ -175,7 +175,8 @@ setup.sh 단계:
 | `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
-| `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA 라이센스 서버 |
+| `LICENSE_INSTANCE_TYPE` | `m7i.large` | 필수 EDA 라이센스 서버 인스턴스 |
+| `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` 기본값 |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장) |
 | `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | Login Node DCV 활성화 및 접속 허용망 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
@@ -251,6 +252,11 @@ Head Node는 Slurm 컨트롤러가 도는 관리 노드이므로 일상 작업�
 하는 것을 권장합니다.
 
 ### 라이센스 서버
+
+License Server 스택은 항상 배포됩니다. 기본 구성은 Synopsys SCL/FlexNet
+floating license를 가정하여 `lmgrd`는 TCP 27000, 고정된 `snpslmd` vendor
+daemon은 TCP 27020을 사용합니다. 다른 벤더를 사용하면 두 포트 설정과 실제
+라이선스 파일의 포트를 동일하게 변경해야 합니다.
 
 ```bash
 ssh -i ~/.ssh/eda-license-key-<ACCOUNT>.pem ec2-user@<LICENSE_IP>

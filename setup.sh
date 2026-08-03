@@ -45,9 +45,10 @@
 #   ONTAP_HA_PAIRS            Number of HA pairs, 1-12 (default: 1)
 #   Both disabled → StorageStack is skipped entirely.
 #
-#   ── License server options ──────────────────────────────────────────
-#   ENABLE_LICENSE_SERVER     1 to create EDA license server EC2 (default: 1)
+#   ── License server (always deployed) ─────────────────────────────────
 #   LICENSE_INSTANCE_TYPE     EC2 instance type (default: m7i.large)
+#   LICENSE_MANAGER_PORT      lmgrd port (default: 27000)
+#   LICENSE_VENDOR_PORT       vendor daemon port (default: 27020)
 #
 #   ── Cluster topology ────────────────────────────────────────────────
 #   ENABLE_LOGIN_NODE         1 to provision ParallelCluster LoginNodes (default: 1)
@@ -220,6 +221,13 @@ validate_positive_integer() {
     || error "${name} must be a positive integer (found: ${value})"
 }
 
+validate_tcp_port() {
+  local name="$1"
+  local value="$2"
+  [[ "${value}" =~ ^[0-9]+$ ]] && ((value >= 1 && value <= 65535)) \
+    || error "${name} must be an integer between 1 and 65535 (found: ${value})"
+}
+
 validate_stack_prefix() {
   local value="$1"
   [[ "${value}" =~ ^[A-Za-z][A-Za-z0-9-]*$ && ${#value} -le 48 ]] \
@@ -249,6 +257,9 @@ ENABLE_LOGIN_NODE="${ENABLE_LOGIN_NODE:-1}"
 ENABLE_SSM="${ENABLE_SSM:-0}"
 ENABLE_DCV="${ENABLE_DCV:-0}"
 DCV_ALLOWED_IPS="${DCV_ALLOWED_IPS:-}"
+LICENSE_INSTANCE_TYPE="${LICENSE_INSTANCE_TYPE:-m7i.large}"
+LICENSE_MANAGER_PORT="${LICENSE_MANAGER_PORT:-27000}"
+LICENSE_VENDOR_PORT="${LICENSE_VENDOR_PORT:-27020}"
 CLUSTER_WAIT_TIMEOUT_SECONDS="${CLUSTER_WAIT_TIMEOUT_SECONDS:-3600}"
 CLUSTER_STATUS_ERROR_LIMIT="${CLUSTER_STATUS_ERROR_LIMIT:-5}"
 CLUSTER_POLL_INTERVAL_SECONDS="${CLUSTER_POLL_INTERVAL_SECONDS:-30}"
@@ -258,6 +269,13 @@ validate_cluster_name "${CLUSTER_NAME}"
 validate_binary_flag "ENABLE_LOGIN_NODE" "${ENABLE_LOGIN_NODE}"
 validate_binary_flag "ENABLE_SSM" "${ENABLE_SSM}"
 validate_binary_flag "ENABLE_DCV" "${ENABLE_DCV}"
+validate_tcp_port "LICENSE_MANAGER_PORT" "${LICENSE_MANAGER_PORT}"
+validate_tcp_port "LICENSE_VENDOR_PORT" "${LICENSE_VENDOR_PORT}"
+[[ "${LICENSE_MANAGER_PORT}" != "${LICENSE_VENDOR_PORT}" ]] \
+  || error "LICENSE_MANAGER_PORT and LICENSE_VENDOR_PORT must differ"
+if [[ -n "${ENABLE_LICENSE_SERVER+x}" && "${ENABLE_LICENSE_SERVER}" != "1" ]]; then
+  error "License Server is mandatory; ENABLE_LICENSE_SERVER=0 is no longer supported."
+fi
 validate_positive_integer "CLUSTER_WAIT_TIMEOUT_SECONDS" "${CLUSTER_WAIT_TIMEOUT_SECONDS}"
 validate_positive_integer "CLUSTER_STATUS_ERROR_LIMIT" "${CLUSTER_STATUS_ERROR_LIMIT}"
 validate_positive_integer "CLUSTER_POLL_INTERVAL_SECONDS" "${CLUSTER_POLL_INTERVAL_SECONDS}"
@@ -389,11 +407,8 @@ else
   fi
   info "Storage: OpenZFS=${ENABLE_OPENZFS} (${OPENZFS_SIZE_GIB} GiB, ${OPENZFS_THROUGHPUT} MBps), ONTAP=${ENABLE_ONTAP} (${ONTAP_SIZE_GIB} GiB, ${ONTAP_HA_PAIRS} HA × ${ONTAP_TPUT_PER_HA} MBps)"
 
-  # ── License server options ──
-  ENABLE_LICENSE_SERVER="${ENABLE_LICENSE_SERVER:-1}"
-  LICENSE_INSTANCE_TYPE="${LICENSE_INSTANCE_TYPE:-m7i.large}"
-  validate_binary_flag "ENABLE_LICENSE_SERVER" "${ENABLE_LICENSE_SERVER}"
-  info "License server: ENABLE_LICENSE_SERVER=${ENABLE_LICENSE_SERVER} (${LICENSE_INSTANCE_TYPE})"
+  # ── License server (mandatory) ──
+  info "License server: always enabled (${LICENSE_INSTANCE_TYPE}, manager=${LICENSE_MANAGER_PORT}, vendor=${LICENSE_VENDOR_PORT})"
 
   # ── Cluster topology ──
   if [[ "${ENABLE_LOGIN_NODE}" != "1" ]]; then
@@ -440,9 +455,7 @@ else
   if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
     REQUIRED_INSTANCE_TYPES+=("r7i.2xlarge")
   fi
-  if [[ "${ENABLE_LICENSE_SERVER}" == "1" ]]; then
-    REQUIRED_INSTANCE_TYPES+=("${LICENSE_INSTANCE_TYPE}")
-  fi
+  REQUIRED_INSTANCE_TYPES+=("${LICENSE_INSTANCE_TYPE}")
   for instance_type in "${REQUIRED_INSTANCE_TYPES[@]}"; do
     aws_capture OFFERING_COUNT "Instance offering lookup for ${instance_type}" \
       aws ec2 describe-instance-type-offerings --region "${REGION}" \
@@ -578,18 +591,16 @@ else
     -c "eda:ontap_size_gib=${ONTAP_SIZE_GIB}"
     -c "eda:ontap_tput_per_ha=${ONTAP_TPUT_PER_HA}"
     -c "eda:ontap_ha_pairs=${ONTAP_HA_PAIRS}"
-    -c "eda:enable_license_server=${ENABLE_LICENSE_SERVER}"
     -c "eda:license_instance_type=${LICENSE_INSTANCE_TYPE}"
+    -c "eda:license_manager_port=${LICENSE_MANAGER_PORT}"
+    -c "eda:license_vendor_port=${LICENSE_VENDOR_PORT}"
   )
 
   # A stack whose initial create rolled back cannot be updated. Remove only
   # failed initial-create stacks, children first; never delete a usable stack.
   aws_capture STACK_SUMMARIES "CloudFormation stack status lookup" \
     aws cloudformation list-stacks --region "${REGION}" --output json
-  STACK_CLEANUP_ORDER=()
-  if [[ "${ENABLE_LICENSE_SERVER}" == "1" ]]; then
-    STACK_CLEANUP_ORDER+=("${LICENSE_STACK}")
-  fi
+  STACK_CLEANUP_ORDER=("${LICENSE_STACK}")
   if [[ "${ENABLE_OPENZFS}" == "1" || "${ENABLE_ONTAP}" == "1" ]]; then
     STACK_CLEANUP_ORDER+=("${STORAGE_STACK}")
   fi
@@ -761,46 +772,49 @@ chmod 400 "${SSH_KEY_FILE}"
 info "Cluster SSH key saved: ${SSH_KEY_FILE}"
 
 # License Server SSH Private Key + connection info
-if [[ "${ENABLE_LICENSE_SERVER:-1}" == "1" ]]; then
-  LIC_KEY_NAME=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseKeyPairName // empty' "${OUTPUTS}")
-  LIC_KEY_ID=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseKeyPairId // empty' "${OUTPUTS}")
-  LIC_IP=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicensePrivateIp // empty' "${OUTPUTS}")
-  LIC_ENI=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseEniId // empty' "${OUTPUTS}")
-  [[ -n "${LIC_KEY_NAME}" && -n "${LIC_KEY_ID}" ]] \
-    || error "License server outputs missing. Re-run CDK deploy."
+LIC_KEY_NAME=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseKeyPairName // empty' "${OUTPUTS}")
+LIC_KEY_ID=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseKeyPairId // empty' "${OUTPUTS}")
+LIC_IP=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicensePrivateIp // empty' "${OUTPUTS}")
+LIC_ENI=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseEniId // empty' "${OUTPUTS}")
+LIC_MANAGER_PORT=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseManagerPort // empty' "${OUTPUTS}")
+LIC_VENDOR_PORT=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseVendorPort // empty' "${OUTPUTS}")
+[[ -n "${LIC_KEY_NAME}" && -n "${LIC_KEY_ID}" && -n "${LIC_IP}" && -n "${LIC_ENI}" \
+   && -n "${LIC_MANAGER_PORT}" && -n "${LIC_VENDOR_PORT}" ]] \
+  || error "License server outputs missing. Re-run CDK deploy."
 
-  LIC_KEY_FILE="${HOME}/.ssh/${LIC_KEY_NAME}.pem"
-  info "Downloading license server SSH private key from SSM Parameter Store..."
-  aws ssm get-parameter \
-    --name "/ec2/keypair/${LIC_KEY_ID}" \
-    --with-decryption \
-    --query 'Parameter.Value' \
-    --output text \
-    --region "${REGION}" > "${LIC_KEY_FILE}" \
-    || error "Failed to download license server SSH private key"
-  chmod 400 "${LIC_KEY_FILE}"
-  info "License server SSH key saved: ${LIC_KEY_FILE}"
+LIC_KEY_FILE="${HOME}/.ssh/${LIC_KEY_NAME}.pem"
+info "Downloading license server SSH private key from SSM Parameter Store..."
+aws ssm get-parameter \
+  --name "/ec2/keypair/${LIC_KEY_ID}" \
+  --with-decryption \
+  --query 'Parameter.Value' \
+  --output text \
+  --region "${REGION}" > "${LIC_KEY_FILE}" \
+  || error "Failed to download license server SSH private key"
+chmod 400 "${LIC_KEY_FILE}"
+info "License server SSH key saved: ${LIC_KEY_FILE}"
 
-  # MAC address (license Host ID) is fetched via describe-network-interfaces
-  LIC_MAC=$(aws ec2 describe-network-interfaces \
-    --network-interface-ids "${LIC_ENI}" \
-    --region "${REGION}" \
-    --query 'NetworkInterfaces[0].MacAddress' \
-    --output text 2>/dev/null || echo "unknown")
+# MAC address (license Host ID) is fetched via describe-network-interfaces
+LIC_MAC=$(aws ec2 describe-network-interfaces \
+  --network-interface-ids "${LIC_ENI}" \
+  --region "${REGION}" \
+  --query 'NetworkInterfaces[0].MacAddress' \
+  --output text 2>/dev/null || echo "unknown")
 
-  echo ""
-  echo "══════════════════════════════════════════"
-  echo "  EDA License Server"
-  echo "──────────────────────────────────────────"
-  echo "  Private IP:    ${LIC_IP}"
-  echo "  MAC address:   ${LIC_MAC}   (= license Host ID)"
-  echo "  SSH:           ssh -i ${LIC_KEY_FILE} ec2-user@${LIC_IP}"
-  echo ""
-  echo "  Cluster-side LM_LICENSE_FILE:"
-  echo "    export LM_LICENSE_FILE=27000@${LIC_IP}"
-  echo "══════════════════════════════════════════"
-  echo ""
-fi
+echo ""
+echo "══════════════════════════════════════════"
+echo "  EDA License Server (Synopsys SCL/FlexNet defaults)"
+echo "──────────────────────────────────────────"
+echo "  Private IP:    ${LIC_IP}"
+echo "  MAC address:   ${LIC_MAC}   (= license Host ID)"
+echo "  Manager port:  ${LIC_MANAGER_PORT} (lmgrd)"
+echo "  Vendor port:   ${LIC_VENDOR_PORT} (snpslmd by default)"
+echo "  SSH:           ssh -i ${LIC_KEY_FILE} ec2-user@${LIC_IP}"
+echo ""
+echo "  Cluster-side LM_LICENSE_FILE:"
+echo "    export LM_LICENSE_FILE=${LIC_MANAGER_PORT}@${LIC_IP}"
+echo "══════════════════════════════════════════"
+echo ""
 
 # ══════════════════════════════════════════════════════════════
 step "6/6  Create ParallelCluster"

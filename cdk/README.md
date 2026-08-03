@@ -11,14 +11,14 @@ stacks individually or changing context.
 
 ## Stack composition
 
-`app.py` synthesizes the stacks below conditionally. Stack names are based
-on the `eda:stack_prefix` (default `Eda`).
+`app.py` synthesizes the stacks below. Stack names are based on the
+`eda:stack_prefix` (default `Eda`).
 
 | Stack | File | Role | Condition |
 |---|---|---|---|
 | `{prefix}Base` | `cdk/base_stack.py` | VPC import, Security Groups (cluster/FSx/ONTAP + endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + optional elb/asg or SSM endpoints) | Always |
 | `{prefix}Storage` | `cdk/storage_stack.py` | FSx OpenZFS / FSx NetApp ONTAP + child volumes (tools/work/scratch) + CloudWatch Alarm | `eda:enable_openzfs` or `eda:enable_ontap` |
-| `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EC2 + static ENI for the EDA license server (MAC persistence) | `eda:enable_license_server=true` |
+| `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EC2 + static ENI for the EDA license server (MAC persistence) | Always |
 
 `slurm_db_stack.py` (Slurm accounting RDS) is currently an optional stack
 not synthesized in `app.py`.
@@ -53,8 +53,9 @@ Pass via `cdk -c key=value` or `cdk.json`. setup.sh forwards
 | `eda:ontap_size_gib` | `10240` | int | ONTAP capacity (1024 – 1048576) |
 | `eda:ontap_tput_per_ha` | `3072` | int | MBps/HA: 1536·3072·6144 |
 | `eda:ontap_ha_pairs` | `1` | int | Number of HA pairs (1–12) |
-| `eda:enable_license_server` | `true` | bool | Create the license server EC2 |
 | `eda:license_instance_type` | `m7i.large` | str | License server instance type |
+| `eda:license_manager_port` | `27000` | int | License manager port (`lmgrd` for Synopsys) |
+| `eda:license_vendor_port` | `27020` | int | Fixed vendor daemon port (`snpslmd` for Synopsys) |
 
 ---
 

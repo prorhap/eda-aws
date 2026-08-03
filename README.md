@@ -27,7 +27,7 @@ Stack names are based on a prefix. Default `STACK_PREFIX=Eda`.
 |---|---|
 | `{prefix}Base` | Security Groups (cluster/FSx/ONTAP + VPC endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + elasticloadbalancing/autoscaling when needed) |
 | `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` volumes) or FSx ONTAP |
-| `{prefix}LicenseServer` | EC2 + static ENI for the EDA license server (MAC address persistence) |
+| `{prefix}LicenseServer` | Always-deployed EC2 + static ENI for the EDA license server (MAC address persistence) |
 | `hpc-cluster` | ParallelCluster (Slurm) stack (created by the pcluster CLI) |
 
 For multiple environments in one account, set a unique `STACK_PREFIX` and
@@ -180,7 +180,8 @@ setup.sh stages:
 | `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
 | `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `1280` | FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
-| `ENABLE_LICENSE_SERVER` / `LICENSE_INSTANCE_TYPE` | `1` / `m7i.large` | EDA license server |
+| `LICENSE_INSTANCE_TYPE` | `m7i.large` | Mandatory EDA license server instance |
+| `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` defaults |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended) |
 | `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable Login Node DCV and restrict its source network |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
@@ -259,6 +260,11 @@ The Head Node is a management node where the Slurm controller runs, so it is
 recommended to do daily work on the Login Node.
 
 ### License server
+
+The License Server stack is always deployed. The defaults model a Synopsys
+SCL/FlexNet floating license server with `lmgrd` on TCP 27000 and a fixed
+`snpslmd` vendor daemon on TCP 27020. Override the two port settings for another
+vendor and make the license file use the same values.
 
 ```bash
 ssh -i ~/.ssh/eda-license-key-<ACCOUNT>.pem ec2-user@<LICENSE_IP>

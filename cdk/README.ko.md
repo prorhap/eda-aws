@@ -17,7 +17,7 @@ EDA on AWS 프로젝트의 CDK Python 앱. 루트 `setup.sh`가 자동으로 ven
 |---|---|---|---|
 | `{prefix}Base` | `cdk/base_stack.py` | VPC import, Security Groups (cluster/FSx/ONTAP + endpoint SG), EC2 KeyPair, CloudTrail + KMS + S3, **VPC Endpoints** (logs/cloudformation/ec2 + s3/dynamodb + 필요 시 elb/asg 또는 SSM endpoints) | 항상 |
 | `{prefix}Storage` | `cdk/storage_stack.py` | FSx OpenZFS / FSx NetApp ONTAP + 자식 볼륨 (tools/work/scratch) + CloudWatch Alarm | `eda:enable_openzfs` 또는 `eda:enable_ontap` |
-| `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EDA 라이선스 서버용 EC2 + static ENI (MAC 영속성) | `eda:enable_license_server=true` |
+| `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EDA 라이선스 서버용 EC2 + static ENI (MAC 영속성) | 항상 |
 
 `slurm_db_stack.py`(Slurm accounting RDS)는 현재 `app.py`에서 합성되지 않는 옵션
 스택입니다.
@@ -51,8 +51,9 @@ EDA on AWS 프로젝트의 CDK Python 앱. 루트 `setup.sh`가 자동으로 ven
 | `eda:ontap_size_gib` | `10240` | int | ONTAP 용량 (1024 ~ 1048576) |
 | `eda:ontap_tput_per_ha` | `3072` | int | MBps/HA: 1536·3072·6144 |
 | `eda:ontap_ha_pairs` | `1` | int | HA pair 개수 (1–12) |
-| `eda:enable_license_server` | `true` | bool | 라이선스 서버 EC2 생성 |
 | `eda:license_instance_type` | `m7i.large` | str | 라이센스 서버 인스턴스 타입 |
+| `eda:license_manager_port` | `27000` | int | 라이선스 manager 포트(Synopsys `lmgrd`) |
+| `eda:license_vendor_port` | `27020` | int | 고정 vendor daemon 포트(Synopsys `snpslmd`) |
 
 ---
 

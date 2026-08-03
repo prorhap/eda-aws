@@ -1,4 +1,5 @@
 import aws_cdk as cdk
+import pytest
 from aws_cdk import assertions, aws_ec2 as ec2
 
 from cdk.license_server_stack import LicenseServerStack
@@ -157,6 +158,14 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
 
     template.resource_count_is("AWS::EC2::NetworkInterface", 1)
     template.has_resource_properties(
+        "AWS::EC2::SecurityGroupIngress",
+        {"IpProtocol": "tcp", "FromPort": 27000, "ToPort": 27000},
+    )
+    template.has_resource_properties(
+        "AWS::EC2::SecurityGroupIngress",
+        {"IpProtocol": "tcp", "FromPort": 27020, "ToPort": 27020},
+    )
+    template.has_resource_properties(
         "AWS::EC2::Instance",
         {
             "NetworkInterfaces": [
@@ -201,3 +210,77 @@ def test_license_resources_are_scoped_by_stack_prefix(monkeypatch):
         "AWS::SSM::Parameter",
         {"Name": "/edaprod/license/InstanceId"},
     )
+
+
+def test_license_server_accepts_vendor_specific_ports(monkeypatch):
+    monkeypatch.setattr(
+        ec2.MachineImage,
+        "lookup",
+        staticmethod(
+            lambda **kwargs: ec2.MachineImage.generic_linux(
+                {"ap-northeast-2": "ami-0123456789abcdef0"}
+            )
+        ),
+    )
+    app = cdk.App(
+        context={
+            "eda:license_manager_port": 28000,
+            "eda:license_vendor_port": 28020,
+        }
+    )
+    vpc, subnet, cluster_sg, _, _ = imported_network(app)
+    stack = LicenseServerStack(
+        app,
+        "EdaLicenseServer",
+        vpc=vpc,
+        sg_cluster_nodes=cluster_sg,
+        primary_subnet=subnet,
+        env=ENV,
+    )
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties(
+        "AWS::EC2::SecurityGroupIngress",
+        {"IpProtocol": "tcp", "FromPort": 28000, "ToPort": 28000},
+    )
+    template.has_resource_properties(
+        "AWS::EC2::SecurityGroupIngress",
+        {"IpProtocol": "tcp", "FromPort": 28020, "ToPort": 28020},
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "message"),
+    [
+        ({"eda:license_manager_port": 0}, "between 1 and 65535"),
+        (
+            {
+                "eda:license_manager_port": 27020,
+                "eda:license_vendor_port": 27020,
+            },
+            "must differ",
+        ),
+    ],
+)
+def test_license_server_rejects_invalid_ports(monkeypatch, context, message):
+    monkeypatch.setattr(
+        ec2.MachineImage,
+        "lookup",
+        staticmethod(
+            lambda **kwargs: ec2.MachineImage.generic_linux(
+                {"ap-northeast-2": "ami-0123456789abcdef0"}
+            )
+        ),
+    )
+    app = cdk.App(context=context)
+    vpc, subnet, cluster_sg, _, _ = imported_network(app)
+
+    with pytest.raises(ValueError, match=message):
+        LicenseServerStack(
+            app,
+            "EdaLicenseServer",
+            vpc=vpc,
+            sg_cluster_nodes=cluster_sg,
+            primary_subnet=subnet,
+            env=ENV,
+        )

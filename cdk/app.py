@@ -5,7 +5,7 @@ Stacks (with default prefix "Eda"):
   1. {prefix}Base           — SG, KeyPair, CloudTrail, VPC Endpoints (기본 네트워크 + 엔드포인트 통합)
                               (기존 VPC/subnet을 import — eda:vpc_id / eda:subnet_id 필요)
   2. {prefix}Storage        — FSx for OpenZFS / FSx for NetApp ONTAP (옵션)
-  3. {prefix}LicenseServer  — EDA 라이센스 서버 EC2 (옵션)
+  3. {prefix}LicenseServer  — EDA 라이센스 서버 EC2 (항상 생성)
 
 스택 접두사(prefix)는 컨텍스트 `eda:stack_prefix`로 변경 가능 (기본: "Eda").
 예: -c eda:stack_prefix=MyEda  → MyEdaBase, MyEdaStorage, MyEdaLicenseServer
@@ -26,8 +26,9 @@ Context flags (cdk -c 또는 cdk.json):
   eda:ontap_tput_per_ha       int  (default: 3072 MBps, valid: 1536|3072|6144)
   eda:ontap_ha_pairs          int  (default: 1, 1-12)
   # License server
-  eda:enable_license_server   bool (default: true)
   eda:license_instance_type   str  (default: m7i.large)
+  eda:license_manager_port    int  (default: 27000)
+  eda:license_vendor_port     int  (default: 27020)
 
 Stack name override (각 스택 이름을 개별로 바꾸고 싶을 때):
   eda:base_stack_name         str  (default: "{prefix}Base")
@@ -83,7 +84,6 @@ base = BaseStack(app, base_stack_name, env=env)
 
 enable_openzfs = _ctx_bool("eda:enable_openzfs", True)
 enable_ontap   = _ctx_bool("eda:enable_ontap", False)
-enable_license = _ctx_bool("eda:enable_license_server", True)
 
 if enable_openzfs or enable_ontap:
     storage = StorageStack(
@@ -96,14 +96,13 @@ if enable_openzfs or enable_ontap:
     )
     storage.add_dependency(base)
 
-if enable_license:
-    license_server = LicenseServerStack(
-        app, license_stack_name,
-        vpc=base.vpc,
-        sg_cluster_nodes=base.sg_cluster_nodes,
-        primary_subnet=base.primary_subnet,
-        env=env,
-    )
-    license_server.add_dependency(base)
+license_server = LicenseServerStack(
+    app, license_stack_name,
+    vpc=base.vpc,
+    sg_cluster_nodes=base.sg_cluster_nodes,
+    primary_subnet=base.primary_subnet,
+    env=env,
+)
+license_server.add_dependency(base)
 
 app.synth()

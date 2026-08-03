@@ -56,7 +56,7 @@ flowchart LR
                     NS["/fsxn/scratch"]
                 end
 
-                LIC["EDA License Server (옵션)<br/>m7i.large"]
+                LIC["EDA License Server (필수)<br/>m7i.large"]
             end
         end
     end
@@ -144,9 +144,11 @@ ONTAP을 추가한 경우 다음과 같이 역할을 분리하는 것을 권장�
 
 ---
 
-## 5. EDA License 서버 (옵션)
+## 5. EDA License 서버 (필수)
 
-AWS 내에 라이선스 서버를 두면 VPN latency(10~30ms)를 피하고 on-prem VPN 의존을 제거할 수 있습니다.
+모든 배포는 AWS 내부에 전용 라이선스 서버를 생성합니다. 기본 운영 모델은
+Synopsys SCL/FlexNet floating license이며, license checkout latency와
+on-prem VPN 의존을 제거합니다.
 
 ### 5.1 구성
 
@@ -158,20 +160,22 @@ AWS 내에 라이선스 서버를 두면 VPN latency(10~30ms)를 피하고 on-pr
 | Network | Static ENI 선분리 → EC2 교체 시에도 MAC 주소 영속 |
 | SSH Key | 전용 KeyPair (`eda-license-key-{account}`) |
 | IAM | `AmazonSSMManagedInstanceCore`, `CloudWatchAgentServerPolicy` |
+| 기본 라이선스 모델 | Synopsys SCL/FlexNet floating license |
+| 기본 포트 | `lmgrd` TCP 27000, 고정 `snpslmd` TCP 27020 |
 
 ### 5.2 Security Group
 
 | 방향 | 포트 | 소스 | 용도 |
 |---|---|---|---|
 | Ingress | TCP 22 | 0.0.0.0/0 | SSH (private subnet이라 VPN 경유만 도달 가능) |
-| Ingress | TCP 27000 | `sg_cluster_nodes` | License manager main port |
-| Ingress | TCP 27020 | `sg_cluster_nodes` | License vendor daemon port |
+| Ingress | TCP 27000 | `sg_cluster_nodes` | `lmgrd` manager 포트(변경 가능) |
+| Ingress | TCP 27020 | `sg_cluster_nodes` | `snpslmd` vendor 포트(변경 가능) |
 
 라이선스 파일에는 **반드시 vendor 포트를 고정**하여 SG 경계를 단순화합니다.
 
 ```
 SERVER <hostname> <MAC> 27000
-VENDOR <vendor_daemon> PORT=27020
+VENDOR snpslmd PORT=27020
 USE_SERVER
 ```
 
@@ -182,19 +186,23 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 1. 출력된 MAC 주소를 EDA 툴 벤더에 제출 → 라이선스 파일 수령
 2. SSH 접속 (VPN 경유):
    `ssh -i ~/.ssh/eda-license-key-<account>.pem ec2-user@<private-ip>`
-3. 32bit 라이브러리 설치:
+3. 선택 사항: 벤더 문서가 32bit runtime을 요구하는 경우에만 관련 라이브러리 설치:
    ```
    sudo dnf -y install glibc.i686 libstdc++.i686 libX11.i686 \
        libXext.i686 libXrender.i686 libgcc.i686 ncurses-libs.i686 lsof
    ```
-4. 벤더 라이선스 매니저 바이너리 설치 (예: `/opt/eda/<vendor>/...`)
+   이 명령은 AWS 스택 배포 필수조건이 아닙니다. 격리망에서 실행하려면 사용 가능한
+   내부 RPM 저장소 또는 오프라인 패키지가 필요합니다.
+4. Synopsys SCL 또는 선택한 벤더의 라이선스 매니저 바이너리 설치
 5. 라이선스 파일 배치 (예: `/opt/eda/<vendor>/licenses/license.dat`)
 6. 벤더 라이선스 데몬 기동
 7. Cluster에서 `export LM_LICENSE_FILE=27000@<private-ip>` 설정
 
-### 5.4 On-prem 서버 재사용
+### 5.4 다른 라이선스 벤더
 
-기존 on-prem 라이선스 서버를 그대로 쓰는 경우 이 옵션을 비활성화합니다. 라이선스 재발급 불필요, 비용 없음. 단 VPN 터널 의존 + latency 발생.
+다른 FlexNet 호환 벤더를 사용해도 EC2 라이선스 서버는 필수입니다.
+`LICENSE_MANAGER_PORT`와 `LICENSE_VENDOR_PORT`를 해당 벤더 라이선스 파일에
+고정한 포트와 동일하게 설정합니다. Cluster SG에서는 설정한 두 포트만 허용됩니다.
 
 ---
 
@@ -354,7 +362,7 @@ Login Node를 유지할 때의 장점:
 | Head Node | `m7i.xlarge` | 1 |
 | Login Node | `r7i.2xlarge` | 1 |
 | Compute | `r8i.32xlarge` | 0~2 |
-| License Server (옵션) | `m7i.large` | 1 |
+| License Server (필수) | `m7i.large` | 1 |
 
 ### 스토리지
 
@@ -392,7 +400,9 @@ OPENZFS_SIZE_GIB=10240
 OPENZFS_THROUGHPUT=2560
 
 ENABLE_ONTAP=0
-ENABLE_LICENSE_SERVER=1
+LICENSE_INSTANCE_TYPE="m7i.large"
+LICENSE_MANAGER_PORT=27000
+LICENSE_VENDOR_PORT=27020
 ENABLE_LOGIN_NODE=1
 ENABLE_VPC_ENDPOINTS=1
 ```
@@ -420,8 +430,9 @@ ENABLE_VPC_ENDPOINTS=1
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP 용량 (1,024 ~ 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | HA pair당 throughput (1536 / 3072 / 6144) |
 | `ONTAP_HA_PAIRS` | `1` | HA pair 수 (1 ~ 12) |
-| `ENABLE_LICENSE_SERVER` | `1` | EDA 라이선스 서버 EC2 생성 여부 |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 라이선스 서버 인스턴스 타입 |
+| `LICENSE_MANAGER_PORT` | `27000` | Manager 포트(기본 `lmgrd`) |
+| `LICENSE_VENDOR_PORT` | `27020` | 고정 vendor daemon 포트(기본 `snpslmd`) |
 | `ENABLE_LOGIN_NODE` | `1` | Login Node 생성 여부 |
 | `ENABLE_SSM` | `0` | SSM Session Manager 활성화 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 VPC Endpoint 자동 생성 |
@@ -494,14 +505,12 @@ flowchart TD
 
 | 구성 | 금액 (USD) |
 |---|---:|
-| 최소 (OpenZFS만, Compute 50% 가동) | ~$3,100 |
-| 기본 + 라이선스 서버 | ~$3,180 |
+| 기본 (OpenZFS + 필수 라이선스 서버, Compute 50% 가동) | ~$3,180 |
 | 풀 옵션 (ONTAP 포함) | ~$7,700 |
 
 주요 절감 포인트:
 
 - Login Node 제거 (on-prem submission): -$460
-- On-prem 라이선스 서버 재사용: -$78
 - Compute Spot 전환: -50% (약 -$1,200)
 - OpenZFS throughput 2560 → 1280: 스토리지 비용 ~30% 절감
 
