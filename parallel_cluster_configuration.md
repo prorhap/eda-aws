@@ -21,9 +21,50 @@ Running `setup.sh` produces the following environment end-to-end:
 | Login Node | `r7i.2xlarge` | 1 (pool) | User entry point — job submission, file access |
 | Compute Node | `r8i.32xlarge` | 0–2 (auto scale) | Simulation / regression workload |
 
-- The Head Node is always running. It runs the Slurm controller (`slurmctld`) and must not be used for simulation jobs.
-- The Login Node sits behind an NLB. Users SSH into it for daily work.
-- Compute Nodes start automatically when jobs are submitted (`MinCount: 0`) and terminate after 15 minutes of idle time (`ScaledownIdletime: 15`).
+For a first-time user, the model is simple: **start work on the Login Node and
+run the actual EDA workload on a Compute Node**. The Head Node manages the
+relationship between them.
+
+- **Login Node**: The engineer's SSH workspace, reached through the VPN. Use it
+  to prepare RTL and scripts, submit jobs with `sbatch`, monitor them with
+  `squeue`, and review results. It is also the place for lightweight
+  interactive analysis such as Verdi. Do not run long simulations, compiles,
+  or regressions directly on the Login Node.
+- **Head Node**: The always-on cluster management node. Its Slurm controller
+  (`slurmctld`) receives jobs and assigns them to appropriate Compute Nodes.
+  Operators can access it for `pcluster` administration and troubleshooting,
+  but general users should neither use it as a workspace nor run EDA jobs on it.
+- **Compute Node**: The worker node on which Slurm runs submitted jobs.
+  `MinCount: 0` starts it on demand, and it terminates after 15 idle minutes
+  (`ScaledownIdletime: 15`). Local disk data is not preserved after
+  termination, so put inputs and results in `/fsxz/work` or `/fsxz/scratch`.
+  Users normally do not SSH to these nodes; work runs inside a Slurm job script.
+
+**Typical user flow**
+
+1. An engineer SSHs to the Login Node through the VPN.
+2. They prepare source and a job script under `/fsxz/work`.
+3. They submit the job from the Login Node with `sbatch`.
+4. Slurm on the Head Node starts a Compute Node in the `eda-r8i` partition and
+   runs the job.
+5. The engineer uses the Login Node to check `squeue` and review job output.
+
+In Slurm, a **job** is an execution request with its CPU, memory, and runtime
+requirements. A **partition** is a group of Compute Nodes that can run the
+job. This project's default partition is `eda-r8i`.
+
+```bash
+# Run on the Login Node
+sinfo                         # Available partitions and node states
+sbatch run_simulation.sbatch  # Submit a job to a Compute Node
+squeue -u "$USER"             # Check your job status
+```
+
+**Official Slurm documentation**
+
+- [Slurm Overview](https://slurm.schedmd.com/overview.html)
+- [`sbatch` command](https://slurm.schedmd.com/sbatch.html)
+- [`squeue` command](https://slurm.schedmd.com/squeue.html)
 
 ### 1.2 Storage layout
 
@@ -535,10 +576,11 @@ pcluster describe-cluster --cluster-name $CLUSTER_NAME \
   --query 'headNode.privateIpAddress' --output text
 ```
 
-### 6.2 SSM Session Manager (no VPN/key needed)
+### 6.2 SSM Session Manager (Optional; no VPN/key needed)
 
-SSM works with IAM credentials alone — no SSH key or VPN required. Only the
-Head Node is reachable.
+SSM is an optional feature and is disabled by default. It works with IAM
+credentials alone — no SSH key or VPN required. Only the Head Node is
+reachable.
 
 **Prerequisites**
 
@@ -611,9 +653,10 @@ Compute Nodes have `MinCount: 0`, so submitting a job auto-starts one (2–5
 min).
 
 ```bash
-mkdir -p /fsxz/scratch/$USER
+TEST_DIR="/fsxz/scratch/$USER/cluster-validation"
+mkdir -p "$TEST_DIR"
 
-cat > /fsxz/scratch/$USER/test_job.sh << 'EOF'
+cat > "$TEST_DIR/test_job.sh" << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=cluster-test
 #SBATCH --partition=eda-r8i
@@ -621,43 +664,72 @@ cat > /fsxz/scratch/$USER/test_job.sh << 'EOF'
 #SBATCH --mem=16G
 #SBATCH --time=00:10:00
 
+set -euo pipefail
+
 echo "=== Job Info ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
 echo "CPUs: $SLURM_CPUS_PER_TASK"
 echo "Memory: ${SLURM_MEM_PER_NODE:-N/A} MB"
 
-echo ""
-echo "=== Mount Points ==="
-df -h | grep fsx
+for mount_dir in /fsxz/tools /fsxz/work /fsxz/scratch; do
+  findmnt -T "$mount_dir" >/dev/null
+done
 
-echo ""
-echo "=== CPU Info ==="
-lscpu | grep -E "^(Architecture|CPU\(s\)|Model name|Thread)"
+probe="/fsxz/scratch/$USER/.cluster-test-${SLURM_JOB_ID}"
+printf 'cluster validation\n' > "$probe"
+test "$(cat "$probe")" = "cluster validation"
+rm -f "$probe"
 
-echo ""
-echo "=== Memory Info ==="
-free -h
+echo "CLUSTER VALIDATION PASSED"
 EOF
 
-sbatch /fsxz/scratch/$USER/test_job.sh
+cd "$TEST_DIR"
+JOB_ID=$(sbatch --parsable test_job.sh)
+JOB_ID=${JOB_ID%%;*}
+echo "Submitted job: $JOB_ID"
 ```
 
 ### 7.5 Job status and output
 
 ```bash
-# Job status (PENDING → CONFIGURING → RUNNING → COMPLETED)
-squeue
+# Shows only active jobs. The row disappears when the job completes.
+squeue -j "$JOB_ID" -o "%.18i %.10T %.40R"
 
-# After completion
-sacct --format=JobID,JobName,Partition,State,Elapsed,MaxRSS,NodeList
-
-# Job output
-cat /fsxz/scratch/$USER/slurm-*.out
+# After completion, verify the success marker and output.
+grep -q "CLUSTER VALIDATION PASSED" "$TEST_DIR/slurm-${JOB_ID}.out"
+cat "$TEST_DIR/slurm-${JOB_ID}.out"
 ```
 
 > The Compute Node takes 2–5 min to come up while in PENDING. Watch
 > transitions with `squeue`.
+
+### 7.6 Local workstation end-to-end smoke test
+
+Run the following from the project root on a VPN-connected local workstation.
+It submits `hello.sbatch` through the Login Node and downloads the Compute Node
+result. This test covers the VPN, SSH, Slurm, FSx working path, and result
+download. It does not use an EDA tool or floating license. Since `pcluster` is
+installed in the project virtual environment, first run
+`source .pcluster-venv/bin/activate`.
+
+```bash
+CLUSTER_NAME=hpc-cluster
+REGION=ap-northeast-2
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LOGIN_ADDR=$(pcluster describe-cluster --cluster-name "$CLUSTER_NAME" \
+  --region "$REGION" --query 'loginNodes[0].address' --output text)
+
+REMOTE_HOST="$LOGIN_ADDR" \
+SSH_KEY="$HOME/.ssh/eda-cluster-key-${ACCOUNT_ID}.pem" \
+./examples/hello-slurm/submit.sh
+```
+
+The command uses the default KeyPair name. If you changed the KeyPair name,
+set `SSH_KEY` to the pem path printed by `setup.sh`. On success, the script
+prints `Slurm smoke test passed` and saves local output under
+`examples/hello-slurm/results/hello-<JOB_ID>/`. The local workstation must
+have `ssh` and `rsync` installed.
 
 ---
 

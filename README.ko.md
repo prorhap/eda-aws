@@ -251,6 +251,32 @@ pcluster ssh --cluster-name <CLUSTER_NAME> --region ap-northeast-2 \
 Head Node는 Slurm 컨트롤러가 도는 관리 노드이므로 일상 작업은 Login Node에서
 하는 것을 권장합니다.
 
+### End-to-end Slurm smoke test
+
+배포 직후에는 프로젝트 루트의 로컬 워크스테이션에서
+`examples/hello-slurm/submit.sh`를 실행해
+VPN, Login Node, Slurm, Compute Node, FSx 작업 경로와 결과 회수를 한 번에
+확인할 수 있습니다. 이 예제는 EDA 툴이나 floating license를 사용하지 않습니다.
+앞 절의 `source .pcluster-venv/bin/activate`를 실행한 셸에서 다음 명령을
+실행합니다.
+
+```bash
+CLUSTER_NAME=hpc-cluster
+REGION=ap-northeast-2
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LOGIN_ADDR=$(pcluster describe-cluster --cluster-name "$CLUSTER_NAME" \
+  --region "$REGION" --query 'loginNodes[0].address' --output text)
+
+REMOTE_HOST="$LOGIN_ADDR" \
+SSH_KEY="$HOME/.ssh/eda-cluster-key-${ACCOUNT_ID}.pem" \
+./examples/hello-slurm/submit.sh
+```
+
+기본 KeyPair 이름을 사용한 명령입니다. KeyPair 이름을 변경했다면 `SSH_KEY`에는
+`setup.sh`가 출력한 pem 경로를 지정합니다. 성공하면 `Slurm smoke test passed`가 표시되고, 출력 파일은
+`examples/hello-slurm/results/hello-<JOB_ID>/`에 저장됩니다. 이 명령은
+VPN이 연결된 로컬 워크스테이션에서 실행하며 `ssh`와 `rsync`가 필요합니다.
+
 ### 라이센스 서버
 
 License Server 스택은 항상 배포됩니다. 기본 구성은 Synopsys SCL/FlexNet
@@ -421,8 +447,7 @@ eda-aws/
 │   ├── cdk/                    # 스택 모듈
 │   │   ├── base_stack.py            # {prefix}Base: SG + KeyPair + CloudTrail + VPC endpoints
 │   │   ├── storage_stack.py         # {prefix}Storage: FSx OpenZFS / ONTAP
-│   │   ├── license_server_stack.py  # {prefix}LicenseServer: EDA 라이선스 서버
-│   │   └── slurm_db_stack.py        # (미사용 옵션) Slurm accounting RDS
+│   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA 라이선스 서버
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
 ├── architecture_guide.md       # 전체 아키텍처 설계

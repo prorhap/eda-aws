@@ -41,7 +41,7 @@ flowchart LR
         subgraph VPC["Existing VPC (import)"]
             subgraph PRIVATE["Existing Private Subnet"]
                 LOGIN["Login Node<br/>r7i.2xlarge<br/>SSH + Verdi + DCV"]
-                HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld / slurmdbd"]
+                HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld"]
                 C1["Compute<br/>r8i.32xlarge"]
                 C2["Compute<br/>r8i.32xlarge"]
 
@@ -84,7 +84,7 @@ Node's Slurm automatically provisions Compute Nodes.
 
 | Role | Instance | Count | Use |
 |---|---|---:|---|
-| Head Node | `m7i.xlarge` | 1 | Slurm controller, slurmdbd |
+| Head Node | `m7i.xlarge` | 1 | Slurm controller |
 | Login Node | `r7i.2xlarge` | 1 | SSH, Verdi GUI, Amazon DCV |
 | Compute | `r8i.32xlarge` | 0–2 | VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
 
@@ -120,25 +120,71 @@ default.
 
 ### 4.2 FSx for NetApp ONTAP (optional)
 
-Add this when you need storage efficiency (65–75% savings), snapshot ·
-SnapMirror, or per-file auditing.
+FSx for ONTAP is disabled by default. Use it instead of or alongside OpenZFS
+when you need to reduce storage consumed by duplicate project data, restore
+individual files from snapshots, replicate data, or use NetApp operational
+features. ONTAP provides compression, compaction, and deduplication. AWS gives
+an example of up to 65% savings for general file-share workloads, but actual
+savings for EDA data depend on file formats and duplication. Measure them with
+the CloudWatch `LogicalDataStored` and `StorageUsed` metrics. [R1S-6]
+
+This project connects ONTAP to ParallelCluster only as **NFS shared storage**.
+ONTAP also supports SMB, iSCSI, NVMe/TCP, SnapMirror, and file-access auditing,
+but the stack does not configure those features. They require separate
+post-deployment design and configuration. [R1][R1S-9]
 
 | Item | Value |
 |---|---|
 | Deployment type | `SINGLE_AZ_2` (gen 2) |
-| HA pairs | 1 (range: 1–12, 6 GBps / 200K IOPS per HA pair) |
+| Availability scope | Active-standby HA within one AZ; no protection from an AZ outage |
+| HA pairs | 1 (range: 1–12, up to 6 GBps / 200K SSD IOPS per HA pair) |
 | Throughput per HA | 3,072 MBps (allowed: 1536 / 3072 / 6144) |
-| Storage capacity | 10 TiB (range: 1 TiB – 1 PiB) |
+| SSD storage capacity | 10 TiB (range: 1 TiB – 1 PiB, maximum 512 TiB per HA pair) |
+| SSD IOPS | Automatic |
 | Tiering | NONE (EDA hot data stays on SSD) |
-| Backup retention | 7 days |
+| Storage efficiency | Enabled on each data volume |
+| Snapshot policy | ONTAP `default` (retains 6 hourly, 2 daily, and 2 weekly snapshots) |
+| Automatic backup | 7-day retention |
+| Encryption | Data at rest encrypted with a customer-managed KMS key |
 
-**Volume layout (SVM: `edasvm`)**
+**Resources created by this project**
 
-| Volume | Junction | Mount | Size |
-|---|---|---|---:|
-| `fsxn_tools` | `/fsxn_tools` | `/fsxn/tools` | 1 TiB |
-| `fsxn_work` | `/fsxn_work` | `/fsxn/work` | 4 TiB |
-| `fsxn_scratch` | `/fsxn_scratch` | `/fsxn/scratch` | 4 TiB |
+- One FSx for ONTAP file system and one Storage Virtual Machine named `edasvm`
+- Three NFS FlexVol volumes mounted automatically under `/fsxn/*` by ParallelCluster
+- A Secrets Manager secret containing a generated `fsxadmin` password
+- A dedicated security group allowing required ONTAP ports from the Cluster Node security group
+- CloudFormation outputs and SSM parameters containing file-system, SVM, and volume IDs
+
+**Volume layout**
+
+| Volume | Junction | Cluster mount | Logical size | Purpose |
+|---|---|---|---:|---|
+| `fsxn_tools` | `/fsxn_tools` | `/fsxn/tools` | 1 TiB | EDA tools and shared environments |
+| `fsxn_work` | `/fsxn_work` | `/fsxn/work` | 4 TiB | Projects, results, and releases |
+| `fsxn_scratch` | `/fsxn_scratch` | `/fsxn/scratch` | 4 TiB | Temporary working data |
+
+The 1/4/4 TiB sizes are fixed **logical sizes** in the current CDK and do not
+scale automatically with `ONTAP_SIZE_GIB`. ONTAP uses thin provisioning, but
+tiering is disabled, so actual data, metadata, and snapshot changes must fit
+within the provisioned SSD capacity.
+
+**Operational considerations**
+
+- `SINGLE_AZ_2` automatically fails over after a file-server failure, but it
+  does not protect against an entire AZ outage. For separate disaster
+  recovery, design SnapMirror replication to another file system or a backup
+  restore strategy. [R1S-5]
+- ONTAP snapshots consume SSD capacity for changed blocks and are separate
+  from automatic backups. Monitor snapshot usage for write-intensive
+  workloads. [R1S-8]
+- SnapMirror, file-access auditing, SMB, iSCSI, and NVMe/TCP are supported
+  capabilities, but this project does not enable them automatically.
+- Setting both `ENABLE_OPENZFS=1` and `ENABLE_ONTAP=1` creates and charges for
+  both file systems. Set `ENABLE_OPENZFS=0` when ONTAP should be the only
+  shared storage.
+- The file system, SVM, volumes, and KMS key use `RETAIN`. They can continue
+  incurring charges after stack deletion and must be removed separately after
+  the data has been reviewed.
 
 ### 4.3 Strategy when using both storages
 
@@ -206,8 +252,20 @@ operator then performs the following manually:
 4. Install Synopsys SCL or the selected vendor's license manager binaries
 5. Place the license file (e.g., `/opt/eda/<vendor>/licenses/license.dat`)
 6. Start the vendor license daemon
-7. On the cluster, set
-   `export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<private-ip>` (default port: 27000)
+7. Configure the manager server for floating-license clients on the cluster
+   (default port: 27000):
+   ```bash
+   export SNPSLMD_LICENSE_FILE=27000@<license-server-private-ip>
+   # Also set this for tools that read only the generic FlexNet variable
+   export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+   ```
+
+The `port@host` form is the standard way for a floating-license client to find
+`lmgrd`. The client first connects to manager port 27000 and is then directed
+to the fixed `snpslmd` port 27020. The environment variable therefore contains
+only the manager port, while the security group must allow both ports. An
+`export` affects only the current shell; configure the same values in a
+modulefile or `/etc/profile.d/synopsys-license.sh` for cluster-wide persistence.
 
 ### 5.4 Other license vendors
 
@@ -229,41 +287,17 @@ cluster security group.
 | `ScaledownIdletime` | 15 min |
 | Spot | Not used |
 
-### License resource
-
-Register licenses as a local resource in Slurm to provide a first line of
-defense against oversubscription within the cluster. It does not auto-sync
-with the external license server, but it is operationally useful. [R29]
-
-```
-Licenses=snps_vcs:40,snps_verdi:2
-```
-
-When submitting a job: `sbatch --licenses=snps_vcs:1 ...`
-
-### Accounting
-
-Run `slurmdbd` on the Head Node and record into RDS MySQL (or Aurora MySQL).
-Track who ran what and how much with `sacct`. [R30]
+This Day 1 configuration does not include RDS or `slurmdbd` for persistent
+Slurm job accounting. Consequently, historical `sacct` queries are not
+available. Operators use job output files and live `squeue` status instead.
+Design and add Slurm accounting separately when long-term history or
+department-level usage analysis becomes necessary.
 
 ---
 
 ## 7. Network / access
 
-### 7.1 Subnet connectivity requirements
-
-AWS APIs required by the ParallelCluster bootstrap:
-CloudFormation, EC2, Auto Scaling, ELB, CloudWatch Logs, SSM, S3, DynamoDB.
-
-The private subnet must satisfy one of:
-
-- Option A: `0.0.0.0/0` → NAT Gateway or Transit Gateway
-- Option B: VPC endpoints (Interface + Gateway) for all the services above
-
-The install script verifies this state before deployment and aborts with an
-error if neither is available.
-
-### 7.2 Security groups
+### 7.1 Security groups
 
 | SG | Main role |
 |---|---|
@@ -272,7 +306,7 @@ error if neither is available.
 | `sg_ontap` | ONTAP NFS + management (TCP 22, 111, 443, 635, 2049, 3260, 4045, 4046, 4420, 4421) ← `sg_cluster_nodes` |
 | `sg_license` | License server (TCP 27000, 27020) ← `sg_cluster_nodes`, TCP 22 ← 0.0.0.0/0 (private subnet, only reachable via VPN) |
 
-### 7.3 Access policy
+### 7.2 Access policy
 
 - Engineers connect: corporate network → VPN → **Login Node private IP** [R11]
 - Restrict `Ssh.AllowedIps` / `Dcv.AllowedIps` to the corporate CIDR [R31]
@@ -280,23 +314,14 @@ error if neither is available.
 
 ---
 
-## 8. NFS mount
+## 8. Directory policy
 
-**OpenZFS export defaults**: `rw,crossmnt,sync`. Restrict the client range to
-the VPC CIDR; do not use `*` or `no_root_squash`. [R24]
+The following structure and operating rules are reference examples for EDA
+workloads. Customers should design and use their directory layout and
+permission policy according to their project organization, user and group
+access model, data-retention, and backup policies.
 
-**Recommended Linux mount options**: [R21]
-```
-nfsvers=3,nconnect=16,rsize=1048576,wsize=1048576,timeo=600,_netdev
-```
-
-If a tool requires NFS v4.1 file locking, reconfigure that volume only to v4.1.
-
----
-
-## 9. Directory policy
-
-### 9.1 Default structure
+### 8.1 Example structure
 
 ```
 /fsxz/tools/
@@ -313,7 +338,7 @@ If a tool requires NFS v4.1 file locking, reconfigure that volume only to v4.1.
   ${USER}/${SLURM_JOB_ID}/
 ```
 
-### 9.2 Operational rules
+### 8.2 Operational rules
 
 1. Run simulation / regression in **`/fsxz/scratch/$USER/$SLURM_JOB_ID`**
 2. Promote only what should be retained to `/fsxz/work/results` or
@@ -321,7 +346,7 @@ If a tool requires NFS v4.1 file locking, reconfigure that volume only to v4.1.
 3. Only platform admins modify `/fsxz/tools`
 4. `/home` is for shell config / dotfiles; do not store project data there
 
-### 9.3 `/home` policy
+### 8.3 `/home` policy
 
 Use the ParallelCluster default behavior (Head Node `/home` shared) as-is.
 When the user count grows or AD integration becomes necessary, consider
@@ -329,7 +354,7 @@ mounting external storage directly.
 
 ---
 
-## 10. Backup / snapshots
+## 9. Backup / snapshots
 
 | Target | Strategy |
 |---|---|
@@ -339,32 +364,12 @@ mounting external storage directly.
 
 ---
 
-## 11. Choosing whether to use a Login Node
+## 10. Initial configuration of the deployed cluster
 
-The Login Node is enabled by default (`Count=1`) and EDA team practice
-typically prefers having a dedicated submission host. Consider disabling it
-only in these cases.
-
-- Engineers have on-prem Linux workstations and enough Slurm experience
-- A CI/CD pipeline submits the jobs
-
-When disabling, the on-prem client must satisfy:
-
-1. **Same Slurm version** as the Head Node
-2. Synced `/etc/slurm/slurm.conf`
-3. Copy of `/etc/munge/munge.key` + running `munge` daemon
-4. **Same UID/GID** as the cluster users
-5. Add a TCP 6817 (slurmctld) allow rule on `sg_cluster_nodes`
-
-Benefits of keeping the Login Node:
-
-- Verdi GUI / DCV ready to use
-- Consistent environment (OS · compiler · tools)
-- Easier debugging / reproduction
-
----
-
-## 12. Initial value summary
+The following values are the baseline configuration when this project first
+deploys the cluster. If settings have changed during operations, verify the
+current values in the CloudFormation stack, ParallelCluster configuration, and
+AWS Console.
 
 ### Cluster
 
@@ -396,9 +401,9 @@ Benefits of keeping the Login Node:
 
 ---
 
-## 13. Deployment options
+## 11. Deployment options
 
-### 13.1 Configuration files
+### 11.1 Configuration files
 
 All deployment options are declared in `config/default.env`. The install
 script auto-loads them at runtime.
@@ -426,11 +431,10 @@ ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
 LICENSE_MANAGER_PORT=27000
 LICENSE_VENDOR_PORT=27020
-ENABLE_LOGIN_NODE=1
 ENABLE_VPC_ENDPOINTS=1
 ```
 
-### 13.2 Configuration precedence
+### 11.2 Configuration precedence
 
 When the same variable is set in multiple places, **top-down** precedence
 applies.
@@ -439,7 +443,7 @@ applies.
 2. **CONFIG file** (`CONFIG=config/prod.env ./setup.sh` or default `config/default.env`)
 3. **Script-internal fallback** (final safety net)
 
-### 13.3 Full options
+### 11.3 Full options
 
 | Variable | Default | Description |
 |---|---|---|
@@ -457,11 +461,10 @@ applies.
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | License server instance type |
 | `LICENSE_MANAGER_PORT` | `27000` | Manager port (`lmgrd` by default) |
 | `LICENSE_VENDOR_PORT` | `27020` | Fixed vendor daemon port (`snpslmd` by default) |
-| `ENABLE_LOGIN_NODE` | `1` | Whether to create the Login Node |
 | `ENABLE_SSM` | `0` | Enable SSM Session Manager |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required VPC endpoints |
 
-### 13.4 Examples
+### 11.4 Examples
 
 ```bash
 # 1) Run with the default config file
@@ -482,24 +485,22 @@ VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy \
   ENABLE_ONTAP=1 ONTAP_HA_PAIRS=2 ONTAP_TPUT_PER_HA=6144 ONTAP_SIZE_GIB=20480 \
   ./setup.sh
 
-# 5) Without Login Node — submit directly from on-prem
-VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy ENABLE_LOGIN_NODE=0 ./setup.sh
 ```
 
 ---
 
-## 14. Operational flow
+## 12. Operational flow
 
 ```mermaid
 flowchart TD
-    A[Engineer connects via VPN] --> B[sbatch on Login Node]
-    B --> C[Head Node / Slurm]
-    C --> D[Compute Node starts]
-    D --> E[/fsxz/scratch as workdir]
-    D --> F[/fsxz/work/results final artifacts]
-    D --> L[License Server 27000/27020 checkout]
-    F --> G[Debug with Verdi on Login Node]
-    G --> H[Edit RTL/TB]
+    A["Engineer connects via VPN"] --> B["sbatch on Login Node"]
+    B --> C["Head Node / Slurm"]
+    C --> D["Compute Node starts"]
+    D --> E["/fsxz/scratch workdir"]
+    D --> F["/fsxz/work/results final artifacts"]
+    D --> L["License Server: 27000/27020 checkout"]
+    F --> G["Debug with Verdi on Login Node"]
+    G --> H["Edit RTL/TB"]
     H --> B
 ```
 
@@ -513,7 +514,7 @@ flowchart TD
 
 ---
 
-## 15. Scaling scenarios
+## 13. Scaling scenarios
 
 | When | Symptom | Response |
 |---|---|---|
@@ -521,11 +522,11 @@ flowchart TD
 | Login Node bottleneck | 2+ Verdi users at the same time, 64 GiB not enough | Split a Verdi-dedicated EC2, increase Login pool count |
 | Storage efficiency need | Storage cost grows, audit needed | Enable ONTAP (storage efficiency, per-file audit) |
 | License capacity | License manager throughput limit | Upsize instance type, triad redundancy |
-| Multi-cluster | Multiple clusters share accounting / licenses | ExternalSlurmdbd, central license server |
+| Multi-cluster | Multiple clusters share licenses | Central license server |
 
 ---
 
-## 16. Cost overview
+## 14. Cost overview
 
 The monthly total is not fixed because EC2, FSx, VPC endpoint, log, backup, and
 data-transfer charges vary with usage and current Seoul Region pricing.
@@ -542,7 +543,7 @@ license fees are not included in AWS infrastructure charges.
 
 ---
 
-## 17. Items not included in Day 1
+## 15. Items not included in Day 1
 
 For initial-build simplicity, the following items are explicitly excluded.
 Consider adopting them after observing actual bottlenecks.
@@ -551,27 +552,24 @@ Consider adopting them after observing actual bottlenecks.
 - Multiple queues (`compile`, `smoke`, `regression` separation)
 - Verdi-dedicated EC2
 - Custom AMI
-- External Slurmdbd
 - ONTAP block protocol (iSCSI / NVMe-oF)
 - FSx cross-region replication (SnapMirror)
 - License server triad redundancy
 
 ---
 
-## 18. References
+## 16. References
 
 ### AWS ParallelCluster
 - [R1] FSx ONTAP / OpenZFS / File Cache shared storage — <https://docs.aws.amazon.com/parallelcluster/latest/ug/shared-storage-config-ontap-zfs-v3.html>
 - [R4] Support policy — <https://docs.aws.amazon.com/parallelcluster/latest/ug/support-policy.html>
 - [R5] Operating systems — <https://docs.aws.amazon.com/parallelcluster/latest/ug/operating-systems-v3.html>
 - [R11] Login nodes — <https://docs.aws.amazon.com/parallelcluster/latest/ug/login-nodes-v3.html>
-- [R12] Networking for login nodes — <https://docs.aws.amazon.com/parallelcluster/latest/ug/login-nodes-networking.html>
 - [R13] DCV access — <https://docs.aws.amazon.com/parallelcluster/latest/ug/dcv-v3.html>
 - [R14] Single-subnet / no-internet prerequisites — <https://docs.aws.amazon.com/parallelcluster/latest/ug/aws-parallelcluster-in-a-single-public-subnet-no-internet-v3.html>
 - [R25] Internal directories — <https://docs.aws.amazon.com/parallelcluster/latest/ug/directories-v3.html>
 - [R26] Scheduling (`JobExclusiveAllocation`) — <https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html>
 - [R27] Slurm memory-based scheduling — <https://docs.aws.amazon.com/parallelcluster/latest/ug/slurm-mem-based-scheduling-v3.html>
-- [R30] Slurm accounting — <https://docs.aws.amazon.com/parallelcluster/latest/ug/slurm-accounting-v3.html>
 - [R31] LoginNodes section / DCV AllowedIps — <https://docs.aws.amazon.com/parallelcluster/latest/ug/LoginNodes-v3.html>
 
 ### EDA tool vendor docs
@@ -598,7 +596,10 @@ Consider adopting them after observing actual bottlenecks.
 ### FSx for NetApp ONTAP
 - [R1S-4] `CreateFileSystemOntapConfiguration` API — <https://docs.aws.amazon.com/fsx/latest/APIReference/API_CreateFileSystemOntapConfiguration.html>
 - [R1S-5] HA pairs — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/HA-pairs.html>
+- [R1S-6] Storage capacity / efficiency — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/managing-storage-capacity.html>
 - [R1S-7] Security groups / port requirements — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/limit-access-security-groups.html>
+- [R1S-8] Snapshots — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snapshots-ontap.html>
+- [R1S-9] FSx for ONTAP overview / protocols / SnapMirror — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/what-is-fsx-ontap.html>
 
 ### Slurm
 - [R29] Licenses Guide — <https://slurm.schedmd.com/licenses.html>

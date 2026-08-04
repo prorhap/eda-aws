@@ -40,7 +40,7 @@ flowchart LR
         subgraph VPC["기존 VPC (import)"]
             subgraph PRIVATE["기존 Private Subnet"]
                 LOGIN["Login Node<br/>r7i.2xlarge<br/>SSH + Verdi + DCV"]
-                HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld / slurmdbd"]
+                HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld"]
                 C1["Compute<br/>r8i.32xlarge"]
                 C2["Compute<br/>r8i.32xlarge"]
 
@@ -81,7 +81,7 @@ flowchart LR
 
 | 역할 | 인스턴스 | 수량 | 용도 |
 |---|---|---:|---|
-| Head Node | `m7i.xlarge` | 1 | Slurm controller, slurmdbd |
+| Head Node | `m7i.xlarge` | 1 | Slurm controller |
 | Login Node | `r7i.2xlarge` | 1 | SSH, Verdi GUI, Amazon DCV |
 | Compute | `r8i.32xlarge` | 0~2 | VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
 
@@ -116,24 +116,68 @@ Quota와 reservation은 설정한 부모 용량에 따라 자동 계산됩니다
 
 ### 4.2 FSx for NetApp ONTAP (옵션)
 
-Storage efficiency(65-75% 절감), snapshot·SnapMirror, 파일 단위 감사가 필요한 경우 추가로 생성할 수 있습니다.
+FSx for ONTAP은 기본 비활성입니다. 중복 데이터가 많은 프로젝트의 저장 공간을
+줄이거나, 파일 단위 복구를 위한 snapshot, 데이터 복제, NetApp 운영 기능이
+필요할 때 OpenZFS를 대체하거나 함께 사용할 수 있습니다. ONTAP은 compression,
+compaction, deduplication을 제공하며 AWS는 일반 파일 공유 워크로드에서 최대
+65%의 절감 예시를 제시합니다. 실제 EDA 데이터의 절감률은 파일 형식과 중복도에
+따라 달라지므로 CloudWatch의 `LogicalDataStored`와 `StorageUsed`로 측정해야
+합니다. [R1S-6]
+
+이 프로젝트는 ONTAP의 **NFS 공유 스토리지**만 ParallelCluster에 연결합니다.
+ONTAP 자체는 SMB, iSCSI, NVMe/TCP, SnapMirror와 파일 접근 감사를 지원하지만,
+이 기능들은 스택이 자동 구성하지 않으며 배포 후 별도 설계와 설정이 필요합니다.
+[R1][R1S-9]
 
 | 항목 | 값 |
 |---|---|
 | Deployment type | `SINGLE_AZ_2` (2세대) |
-| HA pairs | 1 (범위: 1~12, HA pair당 6 GBps / 200K IOPS) |
+| 가용성 범위 | 단일 AZ 내부 active-standby HA, AZ 장애 보호는 제공하지 않음 |
+| HA pairs | 1 (범위: 1~12, HA pair당 최대 6 GBps / 200K SSD IOPS) |
 | Throughput per HA | 3,072 MBps (허용값: 1536 / 3072 / 6144) |
-| Storage capacity | 10 TiB (범위: 1 TiB ~ 1 PiB) |
+| SSD storage capacity | 10 TiB (범위: 1 TiB ~ 1 PiB, HA pair당 최대 512 TiB) |
+| SSD IOPS | Automatic |
 | Tiering | NONE (EDA hot data는 SSD 고정) |
-| Backup retention | 7 days |
+| Storage efficiency | 각 데이터 볼륨에 활성화 |
+| Snapshot policy | ONTAP `default` (시간당 6개, 일일 2개, 주간 2개 유지) |
+| Automatic backup | 7일 보존 |
+| 암호화 | 고객 관리형 KMS key로 저장 데이터 암호화 |
 
-**볼륨 구성 (SVM: `edasvm`)**
+**이 프로젝트가 생성하는 구성**
 
-| 볼륨 | Junction | Mount | Size |
-|---|---|---|---:|
-| `fsxn_tools` | `/fsxn_tools` | `/fsxn/tools` | 1 TiB |
-| `fsxn_work` | `/fsxn_work` | `/fsxn/work` | 4 TiB |
-| `fsxn_scratch` | `/fsxn_scratch` | `/fsxn/scratch` | 4 TiB |
+- FSx for ONTAP 파일 시스템 1개와 Storage Virtual Machine `edasvm` 1개
+- NFS용 FlexVol 볼륨 3개와 ParallelCluster의 `/fsxn/*` 자동 마운트
+- 무작위 `fsxadmin` 암호를 저장하는 Secrets Manager secret
+- Cluster Node 보안 그룹에서 필요한 ONTAP 포트만 허용하는 전용 보안 그룹
+- 파일 시스템·SVM·볼륨 ID를 제공하는 CloudFormation output과 SSM parameter
+
+**볼륨 구성**
+
+| 볼륨 | Junction | Cluster mount | 논리 크기 | 용도 |
+|---|---|---|---:|---|
+| `fsxn_tools` | `/fsxn_tools` | `/fsxn/tools` | 1 TiB | EDA 툴·공용 환경 |
+| `fsxn_work` | `/fsxn_work` | `/fsxn/work` | 4 TiB | 프로젝트·결과·릴리스 |
+| `fsxn_scratch` | `/fsxn_scratch` | `/fsxn/scratch` | 4 TiB | 임시 작업 데이터 |
+
+볼륨 크기 1/4/4 TiB는 현재 CDK에 고정된 **논리 크기**이며
+`ONTAP_SIZE_GIB`에 따라 자동 조정되지 않습니다. ONTAP은 thin provisioning을
+사용하지만, tiering을 비활성화했으므로 실제 데이터·metadata·snapshot 변경분은
+프로비저닝한 SSD 용량 안에 있어야 합니다.
+
+**운영 시 주의사항**
+
+- `SINGLE_AZ_2`는 파일 서버 장애에는 자동 failover하지만 AZ 전체 장애를
+  보호하지 않습니다. 별도 장애 복구가 필요하면 다른 파일 시스템으로
+  SnapMirror 복제하거나 backup 복구 전략을 설계합니다. [R1S-5]
+- ONTAP snapshot은 볼륨의 변경된 블록을 같은 SSD 용량에서 사용하며 automatic
+  backup과 별개입니다. 쓰기 변경량이 많으면 snapshot 공간을 모니터링해야
+  합니다. [R1S-8]
+- SnapMirror, 파일 접근 감사, SMB/iSCSI/NVMe/TCP는 지원 기능일 뿐 이 프로젝트가
+  자동 활성화하지 않습니다.
+- `ENABLE_OPENZFS=1`과 `ENABLE_ONTAP=1`이면 두 파일 시스템을 모두 생성하여
+  각각 과금됩니다. ONTAP만 사용할 경우 `ENABLE_OPENZFS=0`으로 설정합니다.
+- 파일 시스템, SVM, 볼륨과 KMS key에는 `RETAIN` 정책이 적용됩니다. 스택을
+  삭제해도 남아 비용이 발생할 수 있으므로 데이터 확인 후 별도로 정리합니다.
 
 ### 4.3 두 스토리지를 함께 쓰는 전략
 
@@ -199,8 +243,20 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 4. Synopsys SCL 또는 선택한 벤더의 라이선스 매니저 바이너리 설치
 5. 라이선스 파일 배치 (예: `/opt/eda/<vendor>/licenses/license.dat`)
 6. 벤더 라이선스 데몬 기동
-7. Cluster에서 `export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<private-ip>` 설정
-   (기본 포트: 27000)
+7. Cluster의 floating license 클라이언트에서 manager 서버 설정
+   (기본 포트: 27000):
+   ```bash
+   export SNPSLMD_LICENSE_FILE=27000@<license-server-private-ip>
+   # 범용 FlexNet 변수만 확인하는 툴이 있으면 함께 설정
+   export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+   ```
+
+`port@host`는 floating license 클라이언트가 `lmgrd`를 찾는 표준적인 서버
+지정 방식입니다. 클라이언트는 먼저 manager 포트 27000에 연결하고 `lmgrd`의
+안내를 받아 고정된 `snpslmd` 포트 27020으로 연결하므로, 환경변수에는 manager
+포트만 지정하지만 SG에는 두 포트가 모두 필요합니다. `export`는 현재 shell에만
+적용됩니다. 전체 Cluster에 영구 적용하려면 modulefile 또는
+`/etc/profile.d/synopsys-license.sh`에 같은 값을 설정합니다.
 
 ### 5.4 다른 라이선스 벤더
 
@@ -221,37 +277,16 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 | `ScaledownIdletime` | 15분 |
 | Spot | 미사용 |
 
-### License resource
-
-Slurm에 라이선스를 local resource로 등록하여 cluster 내 oversubscription을 1차 방어합니다. 외부 라이선스 서버와 자동 연동되지는 않지만 운영상 유용합니다. [R29]
-
-```
-Licenses=snps_vcs:40,snps_verdi:2
-```
-
-job 제출 시: `sbatch --licenses=snps_vcs:1 ...`
-
-### Accounting
-
-Head Node에 `slurmdbd` 를 두고 RDS MySQL(또는 Aurora MySQL)에 기록합니다. 누가·언제·얼마나 job을 돌렸는지 `sacct` 로 추적 가능합니다. [R30]
+이 Day 1 구성에는 지속적인 Slurm job accounting용 RDS와 `slurmdbd`를
+포함하지 않습니다. 따라서 `sacct` 기반의 이력 조회는 제공하지 않으며, 운영자는
+job 출력 파일과 실행 중인 `squeue` 상태를 사용합니다. 장기간 사용 이력이나
+부서별 사용량 분석이 필요해지면 별도 설계로 Slurm accounting을 추가합니다.
 
 ---
 
 ## 7. 네트워크 / 접속
 
-### 7.1 Subnet 연결성 요구사항
-
-ParallelCluster 부트스트랩에 필요한 AWS API:
-CloudFormation, EC2, Auto Scaling, ELB, CloudWatch Logs, SSM, S3, DynamoDB.
-
-Private subnet이 다음 중 하나를 만족해야 합니다.
-
-- 옵션 A: `0.0.0.0/0` → NAT Gateway 또는 Transit Gateway
-- 옵션 B: 위 서비스의 VPC Endpoint(Interface + Gateway) 전부 존재
-
-설치 스크립트는 배포 전 이 상태를 확인하고, 둘 다 없으면 에러로 중단합니다.
-
-### 7.2 Security Group
+### 7.1 Security Group
 
 | SG | 주요 역할 |
 |---|---|
@@ -260,7 +295,7 @@ Private subnet이 다음 중 하나를 만족해야 합니다.
 | `sg_ontap` | ONTAP NFS + 관리 (TCP 22, 111, 443, 635, 2049, 3260, 4045, 4046, 4420, 4421) ← `sg_cluster_nodes` |
 | `sg_license` | License server (TCP 27000, 27020) ← `sg_cluster_nodes`, TCP 22 ← 0.0.0.0/0 (private subnet, VPN 경유만 실도달) |
 
-### 7.3 접속 정책
+### 7.2 접속 정책
 
 - 엔지니어는 사내망 → VPN → **Login Node private IP** 로 접속 [R11]
 - `Ssh.AllowedIps` / `Dcv.AllowedIps` 를 사내 CIDR로 제한 [R31]
@@ -268,22 +303,13 @@ Private subnet이 다음 중 하나를 만족해야 합니다.
 
 ---
 
-## 8. NFS mount
+## 8. 디렉터리 정책
 
-**OpenZFS export 기본값**: `rw,crossmnt,sync`. client 범위는 VPC CIDR로 제한하며 `*` 와 `no_root_squash` 는 사용하지 않습니다. [R24]
+아래 구조와 운영 규칙은 EDA 워크로드를 위한 참고 예시입니다. 고객은 조직의
+프로젝트 분류, 사용자·그룹 권한, 데이터 보존 및 백업 정책에 맞춰 디렉터리 구조와
+권한 정책을 설계하여 사용해야 합니다.
 
-**Linux mount 권장값**: [R21]
-```
-nfsvers=3,nconnect=16,rsize=1048576,wsize=1048576,timeo=600,_netdev
-```
-
-특정 툴이 NFS v4.1 파일 locking을 요구할 경우 해당 볼륨만 v4.1로 재구성합니다.
-
----
-
-## 9. 디렉터리 정책
-
-### 9.1 기본 구조
+### 8.1 예시 구조
 
 ```
 /fsxz/tools/
@@ -300,20 +326,20 @@ nfsvers=3,nconnect=16,rsize=1048576,wsize=1048576,timeo=600,_netdev
   ${USER}/${SLURM_JOB_ID}/
 ```
 
-### 9.2 운영 규칙
+### 8.2 운영 규칙
 
 1. Simulation / regression은 **`/fsxz/scratch/$USER/$SLURM_JOB_ID`** 에서 실행
 2. 최종 보존 대상만 `/fsxz/work/results` 또는 `/fsxn/work/archive` 로 승격
 3. `/fsxz/tools` 변경은 플랫폼 관리자만 수행
 4. `/home` 은 shell 설정·dotfile 용도; 프로젝트 데이터를 두지 않음
 
-### 9.3 `/home` 정책
+### 8.3 `/home` 정책
 
 ParallelCluster 기본 동작(Head Node `/home` 공유)을 그대로 사용합니다. 사용자 수 증가 또는 AD 연동이 필요해지는 시점에 외부 스토리지로 직접 마운트하는 방식을 검토합니다.
 
 ---
 
-## 10. 백업 / 스냅샷
+## 9. 백업 / 스냅샷
 
 | 대상 | 전략 |
 |---|---|
@@ -323,30 +349,11 @@ ParallelCluster 기본 동작(Head Node `/home` 공유)을 그대로 사용합�
 
 ---
 
-## 11. Login Node 사용 여부 선택
+## 10. 배포된 클러스터의 초기 구성 요약
 
-Login Node는 기본 활성(`Count=1`)이며 EDA 팀 관행상 전용 submission host를 두는 것이 권장됩니다. 다음 경우에만 비활성화를 검토합니다.
-
-- 엔지니어가 on-prem Linux 워크스테이션을 보유하고 Slurm 경험이 충분한 경우
-- CI/CD 파이프라인에서 job을 제출하는 경우
-
-비활성 시 on-prem 클라이언트가 갖춰야 할 요건:
-
-1. Head Node와 **동일한 Slurm 버전**
-2. `/etc/slurm/slurm.conf` 동기화
-3. `/etc/munge/munge.key` 복사 + `munge` 데몬 기동
-4. Cluster user 계정과 **UID/GID 일치**
-5. `sg_cluster_nodes` 에 TCP 6817 (slurmctld) 허용 규칙 추가
-
-Login Node를 유지할 때의 장점:
-
-- Verdi GUI / DCV 즉시 사용
-- 환경(OS·컴파일러·툴) 일관성 보장
-- 디버깅·재현 용이
-
----
-
-## 12. 초기값 요약
+아래 값은 이 프로젝트가 최초 배포할 때의 클러스터 구성 기준입니다. 운영 중
+설정을 변경했다면 CloudFormation stack, ParallelCluster 설정 및 AWS Console에서
+현재 값을 확인합니다.
 
 ### 클러스터
 
@@ -378,9 +385,9 @@ Login Node를 유지할 때의 장점:
 
 ---
 
-## 13. 배포 옵션
+## 11. 배포 옵션
 
-### 13.1 설정 파일
+### 11.1 설정 파일
 
 모든 배포 옵션은 `config/default.env` 에 선언되어 있습니다. 설치 스크립트가 실행 시 자동으로 로드합니다.
 
@@ -407,11 +414,10 @@ ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
 LICENSE_MANAGER_PORT=27000
 LICENSE_VENDOR_PORT=27020
-ENABLE_LOGIN_NODE=1
 ENABLE_VPC_ENDPOINTS=1
 ```
 
-### 13.2 설정 우선순위
+### 11.2 설정 우선순위
 
 동일한 변수가 여러 곳에 있을 때 **위에서 아래 순**으로 우선 적용됩니다.
 
@@ -419,7 +425,7 @@ ENABLE_VPC_ENDPOINTS=1
 2. **CONFIG 파일** (`CONFIG=config/prod.env ./setup.sh` 또는 기본 `config/default.env`)
 3. **스크립트 내부 fallback** (마지막 안전망)
 
-### 13.3 전체 옵션
+### 11.3 전체 옵션
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
@@ -437,11 +443,10 @@ ENABLE_VPC_ENDPOINTS=1
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 라이선스 서버 인스턴스 타입 |
 | `LICENSE_MANAGER_PORT` | `27000` | Manager 포트(기본 `lmgrd`) |
 | `LICENSE_VENDOR_PORT` | `27020` | 고정 vendor daemon 포트(기본 `snpslmd`) |
-| `ENABLE_LOGIN_NODE` | `1` | Login Node 생성 여부 |
 | `ENABLE_SSM` | `0` | SSM Session Manager 활성화 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 VPC Endpoint 자동 생성 |
 
-### 13.4 사용 예시
+### 11.4 사용 예시
 
 ```bash
 # 1) 기본 설정 파일로 실행
@@ -462,24 +467,22 @@ VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy \
   ENABLE_ONTAP=1 ONTAP_HA_PAIRS=2 ONTAP_TPUT_PER_HA=6144 ONTAP_SIZE_GIB=20480 \
   ./setup.sh
 
-# 5) Login Node 없이 on-prem에서 직접 submission
-VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy ENABLE_LOGIN_NODE=0 ./setup.sh
 ```
 
 ---
 
-## 14. 운영 흐름
+## 12. 운영 흐름
 
 ```mermaid
 flowchart TD
-    A[엔지니어 VPN 접속] --> B[Login Node 에서 sbatch]
-    B --> C[Head Node / Slurm]
-    C --> D[Compute Node 기동]
-    D --> E[/fsxz/scratch 에 workdir]
-    D --> F[/fsxz/work/results 최종 산출물]
-    D --> L[License Server 27000/27020 checkout]
-    F --> G[Login Node Verdi 로 debug]
-    G --> H[RTL/TB 수정]
+    A["엔지니어 VPN 접속"] --> B["Login Node에서 sbatch"]
+    B --> C["Head Node / Slurm"]
+    C --> D["Compute Node 기동"]
+    D --> E["/fsxz/scratch workdir"]
+    D --> F["/fsxz/work/results 최종 산출물"]
+    D --> L["License Server: 27000/27020 checkout"]
+    F --> G["Login Node에서 Verdi debug"]
+    G --> H["RTL/TB 수정"]
     H --> B
 ```
 
@@ -493,7 +496,7 @@ flowchart TD
 
 ---
 
-## 15. 확장 시나리오
+## 13. 확장 시나리오
 
 | 시기 | 증상 | 대응 |
 |---|---|---|
@@ -501,11 +504,11 @@ flowchart TD
 | Login Node 병목 | Verdi 동시 사용자 2명 이상, 64 GiB 부족 | Verdi 전용 EC2 분리, Login pool count 증가 |
 | Storage efficiency 요구 | 저장 비용 증가, audit 필요 | ONTAP 활성화 (storage efficiency, 파일 단위 감사) |
 | License 용량 | 라이선스 매니저 throughput 한계 | instance type 승격, triad redundancy |
-| 다중 cluster | 여러 cluster가 accounting / license 공유 | ExternalSlurmdbd, 중앙 라이선스 서버 |
+| 다중 cluster | 여러 cluster가 license 공유 | 중앙 라이선스 서버 |
 
 ---
 
-## 16. 비용 개요
+## 14. 비용 개요
 
 월 비용은 EC2, FSx, VPC Endpoint, 로그, 백업, 데이터 전송 사용량과 서울 리전의
 현재 단가에 따라 달라지므로 고정 금액으로 단정하지 않습니다.
@@ -522,7 +525,7 @@ flowchart TD
 
 ---
 
-## 17. Day 1 에 포함하지 않은 요소
+## 15. Day 1 에 포함하지 않은 요소
 
 초기 구축 단순성을 위해 다음 항목은 명시적으로 제외했습니다. 실제 병목을 관찰한 뒤에 도입을 검토합니다.
 
@@ -530,27 +533,24 @@ flowchart TD
 - 다중 queue (`compile`, `smoke`, `regression` 분리)
 - Verdi 전용 EC2
 - Custom AMI
-- External Slurmdbd
 - ONTAP block protocol (iSCSI / NVMe-oF)
 - FSx 교차 리전 복제 (SnapMirror)
 - 라이선스 서버 triad redundancy
 
 ---
 
-## 18. 참고 문서
+## 16. 참고 문서
 
 ### AWS ParallelCluster
 - [R1] FSx ONTAP / OpenZFS / File Cache shared storage — <https://docs.aws.amazon.com/parallelcluster/latest/ug/shared-storage-config-ontap-zfs-v3.html>
 - [R4] Support policy — <https://docs.aws.amazon.com/parallelcluster/latest/ug/support-policy.html>
 - [R5] Operating systems — <https://docs.aws.amazon.com/parallelcluster/latest/ug/operating-systems-v3.html>
 - [R11] Login nodes — <https://docs.aws.amazon.com/parallelcluster/latest/ug/login-nodes-v3.html>
-- [R12] Networking for login nodes — <https://docs.aws.amazon.com/parallelcluster/latest/ug/login-nodes-networking.html>
 - [R13] DCV access — <https://docs.aws.amazon.com/parallelcluster/latest/ug/dcv-v3.html>
 - [R14] Single-subnet / no-internet prerequisites — <https://docs.aws.amazon.com/parallelcluster/latest/ug/aws-parallelcluster-in-a-single-public-subnet-no-internet-v3.html>
 - [R25] Internal directories — <https://docs.aws.amazon.com/parallelcluster/latest/ug/directories-v3.html>
 - [R26] Scheduling (`JobExclusiveAllocation`) — <https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html>
 - [R27] Slurm memory-based scheduling — <https://docs.aws.amazon.com/parallelcluster/latest/ug/slurm-mem-based-scheduling-v3.html>
-- [R30] Slurm accounting — <https://docs.aws.amazon.com/parallelcluster/latest/ug/slurm-accounting-v3.html>
 - [R31] LoginNodes section / DCV AllowedIps — <https://docs.aws.amazon.com/parallelcluster/latest/ug/LoginNodes-v3.html>
 
 ### EDA 툴 벤더 문서
@@ -577,7 +577,10 @@ flowchart TD
 ### FSx for NetApp ONTAP
 - [R1S-4] `CreateFileSystemOntapConfiguration` API — <https://docs.aws.amazon.com/fsx/latest/APIReference/API_CreateFileSystemOntapConfiguration.html>
 - [R1S-5] HA pairs — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/HA-pairs.html>
+- [R1S-6] Storage capacity / efficiency — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/managing-storage-capacity.html>
 - [R1S-7] Security groups / port requirements — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/limit-access-security-groups.html>
+- [R1S-8] Snapshots — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snapshots-ontap.html>
+- [R1S-9] FSx for ONTAP overview / protocols / SnapMirror — <https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/what-is-fsx-ontap.html>
 
 ### Slurm
 - [R29] Licenses Guide — <https://slurm.schedmd.com/licenses.html>

@@ -19,9 +19,6 @@ EDA on AWS 프로젝트의 CDK Python 앱. 루트 `setup.sh`가 자동으로 ven
 | `{prefix}Storage` | `cdk/storage_stack.py` | FSx OpenZFS / FSx NetApp ONTAP + 자식 볼륨 (tools/work/scratch) + CloudWatch Alarm | `eda:enable_openzfs` 또는 `eda:enable_ontap` |
 | `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EDA 라이선스 서버용 EC2 + static ENI (MAC 영속성) | 항상 |
 
-`slurm_db_stack.py`(Slurm accounting RDS)는 현재 `app.py`에서 합성되지 않는 옵션
-스택입니다.
-
 **변경 이력 (v3.0):**
 - `EdaNetwork` + `EdaVpcEndpoints` 두 스택을 `{prefix}Base` 하나로 통합
 - 스택 접두사를 `eda:stack_prefix` context로 변경 가능 (기본 `Eda`)

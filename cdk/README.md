@@ -20,9 +20,6 @@ stacks individually or changing context.
 | `{prefix}Storage` | `cdk/storage_stack.py` | FSx OpenZFS / FSx NetApp ONTAP + child volumes (tools/work/scratch) + CloudWatch Alarm | `eda:enable_openzfs` or `eda:enable_ontap` |
 | `{prefix}LicenseServer` | `cdk/license_server_stack.py` | EC2 + static ENI for the EDA license server (MAC persistence) | Always |
 
-`slurm_db_stack.py` (Slurm accounting RDS) is currently an optional stack
-not synthesized in `app.py`.
-
 **Change history (v3.0):**
 - Consolidated `EdaNetwork` + `EdaVpcEndpoints` into a single `{prefix}Base`
 - Stack prefix is now configurable via the `eda:stack_prefix` context

@@ -20,9 +20,48 @@
 | Login Node | `r7i.2xlarge` | 1 (풀) | 사용자 진입점 — 잡 제출, 파일 접근 |
 | Compute Node | `r8i.32xlarge` | 0–2 (자동 증감) | 시뮬레이션 / 리그레션 워크로드 |
 
-- Head Node는 항상 가동 중이다. Slurm 컨트롤러(`slurmctld`)가 동작하며, 시뮬레이션 잡 실행에 사용하면 안 된다.
-- Login Node는 NLB 뒤에 위치한다. 사용자는 일상 작업을 위해 이 노드에 SSH로 접속한다.
-- Compute Node는 잡이 제출될 때 자동으로 시작(`MinCount: 0`)되며, 15분 유휴 후 자동 종료(`ScaledownIdletime: 15`)된다.
+처음 사용하는 경우에는 **Login Node에서 작업을 시작하고, Compute Node에서 실제
+EDA 작업이 실행된다**고 이해하면 된다. Head Node는 이 둘을 조정하는 관리 노드다.
+
+- **Login Node**: 엔지니어가 VPN을 통해 SSH로 접속하는 작업 공간이다. 여기에서
+  RTL과 스크립트를 준비하고, `sbatch`로 잡을 제출하며, `squeue`로 상태를
+  확인하고 결과를 검토한다. Verdi 같은 가벼운 대화형 분석도 여기에서 한다.
+  긴 simulation, compile, regression처럼 CPU·메모리를 많이 사용하는 작업은
+  Login Node에서 직접 실행하지 않는다.
+- **Head Node**: 항상 가동되는 클러스터 관리 노드다. Slurm 컨트롤러
+  (`slurmctld`)가 잡 요청을 받고 적절한 Compute Node에 배정한다. 운영자는
+  `pcluster` 명령과 장애 분석을 위해 접근할 수 있지만, 일반 사용자는 이 노드에
+  접속하거나 EDA 작업을 실행하지 않는다.
+- **Compute Node**: Slurm이 제출된 잡을 실행하는 워커 노드다. `MinCount: 0`이라
+  잡이 필요할 때 시작되고, 15분 유휴 후 자동 종료된다
+  (`ScaledownIdletime: 15`). 인스턴스 종료 시 로컬 디스크의 데이터는 보존되지
+  않으므로 입력과 결과는 `/fsxz/work` 또는 `/fsxz/scratch`에 둔다. 일반적으로
+  직접 SSH하지 않고 Slurm job script 안에서 실행한다.
+
+**일반적인 사용 흐름**
+
+1. 엔지니어가 VPN을 통해 Login Node에 SSH로 접속한다.
+2. `/fsxz/work`에 소스와 job script를 준비한다.
+3. Login Node에서 `sbatch`로 job을 제출한다.
+4. Head Node의 Slurm이 `eda-r8i` partition에서 Compute Node를 시작하고 job을 실행한다.
+5. 엔지니어가 Login Node에서 `squeue`와 job 출력 파일로 상태와 결과를 확인한다.
+
+Slurm에서 **job**은 필요한 CPU·메모리·실행 시간을 포함한 실행 요청이고,
+**partition**은 그 job을 실행할 Compute Node 그룹이다. 이 프로젝트의 기본
+partition 이름은 `eda-r8i`다.
+
+```bash
+# Login Node에서 실행
+sinfo                         # 사용할 수 있는 partition과 노드 상태
+sbatch run_simulation.sbatch  # Compute Node에 job 제출
+squeue -u "$USER"             # 내 job 상태 확인
+```
+
+**Slurm 공식 문서**
+
+- [Slurm Overview](https://slurm.schedmd.com/overview.html)
+- [`sbatch` 명령](https://slurm.schedmd.com/sbatch.html)
+- [`squeue` 명령](https://slurm.schedmd.com/squeue.html)
 
 ### 1.2 스토리지 레이아웃
 
@@ -519,9 +558,10 @@ pcluster describe-cluster --cluster-name $CLUSTER_NAME \
   --query 'headNode.privateIpAddress' --output text
 ```
 
-### 6.2 SSM Session Manager 접속 (VPN/키 불필요)
+### 6.2 SSM Session Manager 접속 (선택, VPN/키 불필요)
 
-SSM은 IAM 자격 증명만으로 접속 가능하며, SSH 키나 VPN 연결이 필요 없다.
+SSM은 기본 비활성인 선택 기능이다. IAM 자격 증명만으로 접속 가능하며, SSH 키나
+VPN 연결이 필요 없다.
 Head Node에만 접속 가능하다.
 
 **사전 조건**
@@ -593,9 +633,10 @@ scontrol show config | grep -i memory
 Compute Node는 `MinCount: 0`이므로 잡을 제출하면 자동으로 시작된다 (2-5분 소요).
 
 ```bash
-mkdir -p /fsxz/scratch/$USER
+TEST_DIR="/fsxz/scratch/$USER/cluster-validation"
+mkdir -p "$TEST_DIR"
 
-cat > /fsxz/scratch/$USER/test_job.sh << 'EOF'
+cat > "$TEST_DIR/test_job.sh" << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=cluster-test
 #SBATCH --partition=eda-r8i
@@ -603,42 +644,69 @@ cat > /fsxz/scratch/$USER/test_job.sh << 'EOF'
 #SBATCH --mem=16G
 #SBATCH --time=00:10:00
 
+set -euo pipefail
+
 echo "=== Job Info ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $(hostname)"
 echo "CPUs: $SLURM_CPUS_PER_TASK"
 echo "Memory: ${SLURM_MEM_PER_NODE:-N/A} MB"
 
-echo ""
-echo "=== Mount Points ==="
-df -h | grep fsx
+for mount_dir in /fsxz/tools /fsxz/work /fsxz/scratch; do
+  findmnt -T "$mount_dir" >/dev/null
+done
 
-echo ""
-echo "=== CPU Info ==="
-lscpu | grep -E "^(Architecture|CPU\(s\)|Model name|Thread)"
+probe="/fsxz/scratch/$USER/.cluster-test-${SLURM_JOB_ID}"
+printf 'cluster validation\n' > "$probe"
+test "$(cat "$probe")" = "cluster validation"
+rm -f "$probe"
 
-echo ""
-echo "=== Memory Info ==="
-free -h
+echo "CLUSTER VALIDATION PASSED"
 EOF
 
-sbatch /fsxz/scratch/$USER/test_job.sh
+cd "$TEST_DIR"
+JOB_ID=$(sbatch --parsable test_job.sh)
+JOB_ID=${JOB_ID%%;*}
+echo "Submitted job: $JOB_ID"
 ```
 
 ### 7.5 잡 상태 확인 및 결과
 
 ```bash
-# 잡 상태 확인 (PENDING → CONFIGURING → RUNNING → COMPLETED)
-squeue
+# 실행 중인 상태만 표시된다. 완료되면 목록에서 사라진다.
+squeue -j "$JOB_ID" -o "%.18i %.10T %.40R"
 
-# 잡 완료 후 결과 확인
-sacct --format=JobID,JobName,Partition,State,Elapsed,MaxRSS,NodeList
-
-# 잡 출력 확인
-cat /fsxz/scratch/$USER/slurm-*.out
+# 잡이 완료된 뒤, 성공 표식과 출력을 확인한다.
+grep -q "CLUSTER VALIDATION PASSED" "$TEST_DIR/slurm-${JOB_ID}.out"
+cat "$TEST_DIR/slurm-${JOB_ID}.out"
 ```
 
 > PENDING에서 2-5분간 Compute Node가 시작된다. `squeue`로 상태 변화를 확인한다.
+
+### 7.6 로컬 워크스테이션 end-to-end smoke test
+
+VPN이 연결된 로컬 워크스테이션의 프로젝트 루트에서 다음 명령을 실행하면 Login Node를 경유해
+`hello.sbatch`를 제출하고, Compute Node 실행 결과를 로컬로 회수한다. VPN, SSH,
+Slurm, FSx 작업 경로와 결과 회수를 함께 확인하는 테스트이며 EDA 툴과 floating
+license는 사용하지 않는다. `pcluster`가 프로젝트 가상 환경에 설치되어 있으므로,
+먼저 `source .pcluster-venv/bin/activate`를 실행한다.
+
+```bash
+CLUSTER_NAME=hpc-cluster
+REGION=ap-northeast-2
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LOGIN_ADDR=$(pcluster describe-cluster --cluster-name "$CLUSTER_NAME" \
+  --region "$REGION" --query 'loginNodes[0].address' --output text)
+
+REMOTE_HOST="$LOGIN_ADDR" \
+SSH_KEY="$HOME/.ssh/eda-cluster-key-${ACCOUNT_ID}.pem" \
+./examples/hello-slurm/submit.sh
+```
+
+기본 KeyPair 이름을 사용한 명령이다. KeyPair 이름을 변경했다면 `SSH_KEY`에는
+`setup.sh`가 출력한 pem 경로를 지정한다. 성공 시 `Slurm smoke test passed`가 표시되며, 로컬 결과는
+`examples/hello-slurm/results/hello-<JOB_ID>/`에 저장된다. 로컬에 `ssh`와
+`rsync`가 설치되어 있어야 한다.
 
 ---
 

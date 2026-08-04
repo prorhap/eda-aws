@@ -259,6 +259,32 @@ pcluster ssh --cluster-name <CLUSTER_NAME> --region ap-northeast-2 \
 The Head Node is a management node where the Slurm controller runs, so it is
 recommended to do daily work on the Login Node.
 
+### End-to-end Slurm smoke test
+
+After deployment, run `examples/hello-slurm/submit.sh` from the project root
+on the local workstation to validate the VPN, Login Node, Slurm, Compute Node,
+FSx working path, and result download in one flow. This example does not use
+an EDA tool or floating license. Run the following in the shell where you
+activated `.pcluster-venv` in the preceding section.
+
+```bash
+CLUSTER_NAME=hpc-cluster
+REGION=ap-northeast-2
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+LOGIN_ADDR=$(pcluster describe-cluster --cluster-name "$CLUSTER_NAME" \
+  --region "$REGION" --query 'loginNodes[0].address' --output text)
+
+REMOTE_HOST="$LOGIN_ADDR" \
+SSH_KEY="$HOME/.ssh/eda-cluster-key-${ACCOUNT_ID}.pem" \
+./examples/hello-slurm/submit.sh
+```
+
+The command uses the default KeyPair name. If you changed the KeyPair name,
+set `SSH_KEY` to the pem path printed by `setup.sh`. On success, the script
+prints `Slurm smoke test passed` and downloads output
+to `examples/hello-slurm/results/hello-<JOB_ID>/`. Run it from a VPN-connected
+local workstation with `ssh` and `rsync` installed.
+
 ### License server
 
 The License Server stack is always deployed. The defaults model a Synopsys
@@ -441,8 +467,7 @@ eda-aws/
 │   ├── cdk/                    # Stack modules
 │   │   ├── base_stack.py            # {prefix}Base: SG + KeyPair + CloudTrail + VPC endpoints
 │   │   ├── storage_stack.py         # {prefix}Storage: FSx OpenZFS / ONTAP
-│   │   ├── license_server_stack.py  # {prefix}LicenseServer: EDA license server
-│   │   └── slurm_db_stack.py        # (unused option) Slurm accounting RDS
+│   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA license server
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
 ├── architecture_guide.md       # Overall architecture design
