@@ -35,3 +35,4 @@ cdk/pcluster-config.yaml
 .DS_Store
 *.swp
 *.bak
+.playwright-mcp

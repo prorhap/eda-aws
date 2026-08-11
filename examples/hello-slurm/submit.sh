@@ -17,6 +17,9 @@
 #                    where AWS_ACCOUNT = aws sts get-caller-identity --query Account)
 #   REMOTE_USER      default: ec2-user
 #   REMOTE_DIR       default: /fsxz/work/jobs/<USER>/<job-name>-<timestamp>
+#   EXPECTED_OUTPUT_MARKER
+#                    Optional success text to require in stdout for a custom job.
+#                    The default hello.sbatch requires "=== Done ===".
 #
 # Flow:
 #   1. /fsxz/work 아래에 job 디렉터리 생성 (ssh mkdir)
@@ -81,14 +84,9 @@ while true; do
   sleep 15
 done
 
-# 5) show sacct result + tail logs + pull back
+# 5) show job logs and pull back
 echo
-echo "── sacct summary:"
-${SSH} "${REMOTE_USER}@${REMOTE_HOST}" \
-  "sacct -j ${JOB_ID} --format=JobID,JobName,Partition,State,ExitCode,Elapsed,MaxRSS" || true
-
-echo
-echo "── stdout (hello-${JOB_ID}.out):"
+echo "── stdout (${JOB_NAME}-${JOB_ID}.out):"
 ${SSH} "${REMOTE_USER}@${REMOTE_HOST}" \
   "cat ${REMOTE_DIR}/${JOB_NAME}-${JOB_ID}.out 2>/dev/null" || true
 
@@ -96,7 +94,7 @@ STDERR_CONTENT=$(${SSH} "${REMOTE_USER}@${REMOTE_HOST}" \
   "cat ${REMOTE_DIR}/${JOB_NAME}-${JOB_ID}.err 2>/dev/null" || true)
 if [[ -n "${STDERR_CONTENT}" ]]; then
   echo
-  echo "── stderr (hello-${JOB_ID}.err):"
+  echo "── stderr (${JOB_NAME}-${JOB_ID}.err):"
   echo "${STDERR_CONTENT}"
 fi
 
@@ -104,6 +102,22 @@ LOCAL_RESULTS="${SCRIPT_DIR}/results/${JOB_NAME}-${JOB_ID}"
 mkdir -p "${LOCAL_RESULTS}"
 rsync -az -e "ssh -i ${SSH_KEY}" \
   --include='*.out' --include='*.err' --exclude='*' \
-  "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/" "${LOCAL_RESULTS}/" || true
+  "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/" "${LOCAL_RESULTS}/"
 echo
 echo "── Results copied to: ${LOCAL_RESULTS}"
+
+if [[ "${JOB_NAME}" == "hello" && -z "${EXPECTED_OUTPUT_MARKER:-}" ]]; then
+  EXPECTED_OUTPUT_MARKER="=== Done ==="
+fi
+
+if [[ -n "${EXPECTED_OUTPUT_MARKER:-}" ]]; then
+  OUT_FILE="${LOCAL_RESULTS}/${JOB_NAME}-${JOB_ID}.out"
+  ERR_FILE="${LOCAL_RESULTS}/${JOB_NAME}-${JOB_ID}.err"
+
+  if [[ -s "${ERR_FILE}" ]] || ! grep -Fxq "${EXPECTED_OUTPUT_MARKER}" "${OUT_FILE}"; then
+    echo "ERROR: Job ${JOB_ID} did not produce the expected successful result." >&2
+    exit 1
+  fi
+
+  echo "── Slurm smoke test passed"
+fi

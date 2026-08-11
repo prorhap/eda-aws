@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AWS에서 Synopsys VCS/Verdi 협업 환경 구축 가이드 — User A ↔ User B 격리 + Shared 협업</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c2230; --border:#2a3140;
+    --text:#e6edf3; --muted:#9da7b3; --accent:#4a9eff; --accent2:#7c5cff;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --code-bg:#0b0e14;
+    --maxw:960px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    line-height:1.75; font-size:16px;
+  }
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:48px 24px 120px}
+  header.hero{
+    background:linear-gradient(135deg,#161b22,#1c2230 60%,#20182e);
+    border:1px solid var(--border); border-radius:16px; padding:40px 36px; margin-bottom:40px;
+  }
+  header.hero .tag{display:inline-block; font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--accent); background:rgba(74,158,255,.12); border:1px solid rgba(74,158,255,.3);
+    padding:4px 12px; border-radius:999px; margin-bottom:16px; font-weight:600}
+  header.hero h1{margin:0 0 12px; font-size:30px; line-height:1.35; font-weight:800; letter-spacing:-.01em}
+  header.hero p{margin:0; color:var(--muted); font-size:16px}
+  header.hero .meta{margin-top:20px; padding-top:20px; border-top:1px solid var(--border);
+    display:flex; flex-wrap:wrap; gap:20px; font-size:13px; color:var(--muted)}
+  header.hero .meta b{color:var(--text); font-weight:600}
+
+  nav.toc{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:24px 28px; margin-bottom:44px}
+  nav.toc h2{margin:0 0 14px; font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted)}
+  nav.toc ol{margin:0; padding-left:22px; columns:2; column-gap:32px}
+  nav.toc li{margin:6px 0; break-inside:avoid}
+  nav.toc a{color:var(--text); text-decoration:none; font-size:14.5px}
+  nav.toc a:hover{color:var(--accent); text-decoration:underline}
+
+  h2.sec{font-size:23px; font-weight:800; margin:56px 0 18px; padding-bottom:12px; border-bottom:2px solid var(--border); letter-spacing:-.01em; scroll-margin-top:20px}
+  h2.sec .n{color:var(--accent); font-weight:800; margin-right:10px}
+  h3{font-size:18px; font-weight:700; margin:32px 0 12px; color:#fff; scroll-margin-top:20px}
+  h4{font-size:15.5px; font-weight:700; margin:22px 0 8px; color:var(--text)}
+  p{margin:12px 0}
+  a{color:var(--accent)}
+  ul,ol{margin:12px 0; padding-left:26px}
+  li{margin:7px 0}
+  strong{color:#fff; font-weight:700}
+  code{font-family:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    background:var(--code-bg); border:1px solid var(--border); border-radius:5px; padding:1.5px 6px; font-size:13.5px; color:#e3b341}
+  pre{background:var(--code-bg); border:1px solid var(--border); border-radius:10px; padding:18px 20px;
+    overflow-x:auto; margin:16px 0; font-size:13.5px; line-height:1.6}
+  pre code{background:none; border:none; padding:0; color:#c9d1d9}
+  pre .c{color:#7d8590}      /* comment */
+  pre .k{color:#ff7b72}      /* keyword  */
+  pre .s{color:#a5d6ff}      /* string   */
+  pre .p{color:#d2a8ff}      /* path/var */
+  pre .g{color:#7ee787}      /* good     */
+
+  .diagram{background:var(--code-bg); border:1px solid var(--border); border-radius:10px; padding:20px;
+    overflow-x:auto; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; line-height:1.5; color:#adbac7; white-space:pre; margin:18px 0}
+
+  table{width:100%; border-collapse:collapse; margin:18px 0; font-size:14.5px; overflow:hidden; border-radius:10px}
+  th,td{border:1px solid var(--border); padding:11px 14px; text-align:left; vertical-align:top}
+  th{background:var(--panel2); font-weight:700; color:#fff}
+  tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+
+  .box{border-radius:10px; padding:16px 20px; margin:20px 0; border:1px solid; border-left-width:4px}
+  .box p:first-child{margin-top:0} .box p:last-child{margin-bottom:0}
+  .box .lbl{font-weight:800; font-size:13px; text-transform:uppercase; letter-spacing:.05em; display:block; margin-bottom:6px}
+  .box.info{background:rgba(74,158,255,.07); border-color:var(--accent)}
+  .box.info .lbl{color:var(--accent)}
+  .box.warn{background:rgba(210,153,34,.08); border-color:var(--amber)}
+  .box.warn .lbl{color:var(--amber)}
+  .box.danger{background:rgba(248,81,73,.08); border-color:var(--red)}
+  .box.danger .lbl{color:var(--red)}
+  .box.ok{background:rgba(63,185,80,.08); border-color:var(--green)}
+  .box.ok .lbl{color:var(--green)}
+  .box.key{background:linear-gradient(135deg,rgba(124,92,255,.1),rgba(74,158,255,.06)); border-color:var(--accent2)}
+  .box.key .lbl{color:var(--accent2)}
+
+  .pill{display:inline-block; font-size:11px; font-weight:700; padding:2px 9px; border-radius:999px; vertical-align:middle; margin-left:6px}
+  .pill.verified{background:rgba(63,185,80,.15); color:var(--green); border:1px solid rgba(63,185,80,.35)}
+  .pill.practice{background:rgba(210,153,34,.13); color:var(--amber); border:1px solid rgba(210,153,34,.32)}
+  .pill.refuted{background:rgba(248,81,73,.13); color:var(--red); border:1px solid rgba(248,81,73,.32)}
+
+  .cite{color:var(--muted); font-size:12.5px; font-style:normal}
+  .step-h{display:flex; align-items:center; gap:12px; margin:34px 0 4px}
+  .step-h .num{flex:none; width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),var(--accent2));
+    color:#fff; font-weight:800; display:flex; align-items:center; justify-content:center; font-size:15px}
+  .step-h h3{margin:0}
+
+  .legend{display:flex; gap:18px; flex-wrap:wrap; margin:14px 0; font-size:13px; color:var(--muted)}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .dot{width:10px; height:10px; border-radius:50%; display:inline-block}
+
+  footer{margin-top:60px; padding-top:24px; border-top:1px solid var(--border); color:var(--muted); font-size:13px}
+  .src-list{font-size:13.5px}
+  .src-list li{margin:9px 0; word-break:break-all}
+  hr{border:none; border-top:1px solid var(--border); margin:40px 0}
+  .tldr{background:var(--panel); border:1px solid var(--border); border-left:4px solid var(--green); border-radius:10px; padding:20px 24px; margin:28px 0}
+
+  @media(max-width:720px){ nav.toc ol{columns:1} header.hero h1{font-size:24px} .wrap{padding:28px 16px 80px} }
+  @media print{
+    body{background:#fff; color:#111; font-size:12px}
+    .wrap{max-width:100%} header.hero{background:#f4f6f8; color:#111}
+    code,pre,.diagram{background:#f6f8fa; color:#111} nav.toc{page-break-after:always}
+    h2.sec{page-break-after:avoid} pre,table,.box,.diagram{page-break-inside:avoid}
+    a{color:#0b5cad}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <span class="tag">EDA on AWS · 실무 구축 가이드</span>
+  <h1>AWS에서 Synopsys VCS / Verdi 협업 환경 구축하기<br>— User A ↔ User B 격리 + Shared 협업</h1>
+  <p>기존 <b>ParallelCluster + FSx for OpenZFS</b>를 확장하여, User A(RTL 준비·컴파일)와 User B(내부 타팀, 시뮬레이션·디버깅)가
+  서로의 Private Area는 볼 수 없고 Shared Area만 공유하는 환경을 콘솔부터 단계별로 구성하는 방법.</p>
+  <div class="meta">
+    <span><b>대상 인프라</b> ParallelCluster v3 · FSx OpenZFS · Amazon(NICE) DCV</span>
+    <span><b>리전</b> ap-northeast-2 (서울)</span>
+    <span><b>사용자</b> 같은 AWS 계정 내 2인 (내부 타팀)</span>
+  </div>
+</header>
+
+<div class="box key">
+  <span class="lbl">한 문장 요약</span>
+  <p><b>격리는 두 겹 — 파일은 리눅스 그룹 권한, AWS 리소스는 IAM 그룹으로 한다.</b> RTL 원본은 S3에 두고 컴파일 노드가 <b>로컬로 복사(<code>aws s3 sync</code>)</b>해 읽어 컴파일하며(S3 직접 마운트는 심링크·성능 문제로 비권장), 결과 <code>simv</code> 한 묶음을 OpenZFS <code>/shared</code>에 저장한다.
+  그러면 User B 그룹(타팀 여러 명)은 소스 없이도 그 <code>simv</code>를 Slurm으로 병렬 실행해 <code>fsdb</code> 파형을 만들고 GPU + DCV 데스크톱의 Verdi로 분석한다.</p>
+</div>
+
+<nav class="toc">
+  <h2>목차</h2>
+  <ol>
+    <li><a href="#s1">핵심 원칙 — 격리는 IAM이 아니라 리눅스 권한</a></li>
+    <li><a href="#s2">권장 아키텍처 &amp; 데이터 흐름</a></li>
+    <li><a href="#s3">스토리지 티어링 — S3 vs OpenZFS 역할 분담</a></li>
+    <li><a href="#s4">VCS / simv / fsdb 기본 개념</a></li>
+    <li><a href="#s5">시뮬레이션 실행 — Slurm 병렬 regression</a></li>
+    <li><a href="#s6">단계별 구축 절차 (콘솔 홈부터)</a></li>
+    <li><a href="#s7">POSIX 권한 설계 (Private 격리 + Shared 협업)</a></li>
+    <li><a href="#s8">Amazon DCV로 Verdi GUI 디버깅</a></li>
+    <li><a href="#s9">Synopsys 라이선스 서버</a></li>
+    <li><a href="#s10">Verdi 소스 디버깅 vs RTL 은닉 (갈림길)</a></li>
+    <li><a href="#s11">주의사항 &amp; 함정</a></li>
+    <li><a href="#s12">근거 출처</a></li>
+  </ol>
+</nav>
+
+<!-- ============ 1 ============ -->
+<h2 class="sec" id="s1"><span class="n">1</span>핵심 원칙 — 격리는 IAM이 아니라 리눅스 권한이 한다</h2>
+<p>이 한 가지를 헷갈리면 전체 설계가 틀어집니다. 그림의 "Private Area / Shared Area" 벽은 <b>AWS IAM이 아니라 리눅스 파일 권한(uid/gid, mode)</b>으로 세웁니다.</p>
+
+<table>
+  <thead><tr><th>계층</th><th>무엇을 통제하나</th><th>User A/B 격리에 쓰나?</th></tr></thead>
+  <tbody>
+    <tr><td><b>IAM</b> (사용자·역할)</td><td>AWS <b>API·리소스</b> 접근 (EC2 시작, S3 버킷, <code>pcluster</code> 명령 등)</td><td>부분적 — S3 원본 접근 통제엔 사용</td></tr>
+    <tr><td><b>Linux / POSIX</b> 권한</td><td><b>파일시스템</b> 접근 (홈 디렉토리, 프로젝트 폴더, <code>simv</code>, <code>fsdb</code>)</td><td><b>✅ 예 — 이걸로 격리한다</b></td></tr>
+  </tbody>
+</table>
+
+<div class="box info">
+  <span class="lbl">검증됨 <span class="pill verified">primary</span></span>
+  <p>ParallelCluster는 IAM을 <b>두 계층</b>에서만 요구합니다 — ① <code>pcluster</code> CLI를 쓰는 사람의 권한, ② 클러스터 인스턴스가 동작하기 위한 역할.
+  즉 IAM은 "누가 클러스터를 관리·조작하나"만 담당하고, Private/Shared 파일 격리는 <b>리눅스 uid/gid + 파일 권한</b>으로 설계해야 합니다.
+  <span class="cite">(AWS ParallelCluster UG — iam-roles-in-parallelcluster-v3)</span></p>
+</div>
+
+<h3>그룹으로 관리하기 — IAM 그룹과 리눅스 그룹을 <u>둘 다</u> 만든다</h3>
+<p>User A/B를 그룹으로 묶어 관리하려는 방향은 맞습니다(특히 User B가 타팀 여러 명). 다만 <b>IAM 그룹만으로는 파일 격리가 안 됩니다.</b> VCS가 <code>/shared/proj/simv</code>를 열 때 커널은 IAM을 보지 않고 그 프로세스의 <b>리눅스 uid/gid와 파일 mode</b>만 봅니다. 그래서 같은 사람들을 <b>양쪽 레이어에 각각</b> 그룹화합니다.</p>
+
+<table>
+  <thead><tr><th>하려는 것</th><th>IAM 그룹으로?</th><th>실제로 되는 도구</th></tr></thead>
+  <tbody>
+    <tr><td>team_b가 <code>/shared</code>의 <code>simv</code> 실행</td><td>❌</td><td><b>리눅스 그룹</b> (<code>eda_proj</code>)</td></tr>
+    <tr><td>team_b가 team_a의 <code>/home</code> 못 봄</td><td>❌</td><td><b>리눅스 권한</b> <code>0700</code></td></tr>
+    <tr><td>team_b가 S3의 RTL 버킷 못 읽음</td><td>✅</td><td><b>IAM 그룹 정책</b> (Deny)</td></tr>
+    <tr><td>team_b가 EC2/pcluster 조작</td><td>✅</td><td><b>IAM 그룹 정책</b></td></tr>
+  </tbody>
+</table>
+
+<div class="diagram">[디렉토리 AD/LDAP]  사람 + 리눅스 그룹        [IAM]  AWS 리소스 접근
+  ├ team_a   (userA1, userA2 …)                ├ EDA-TeamA → S3 RTL read/write
+  ├ team_b   (userB1, userB2 … 타팀)           └ EDA-TeamB → S3 RTL Deny, 결과만 read
+  └ eda_proj (team_a + team_b 공유)
+      │                                              │
+      ▼ 파일시스템 레이어에서 격리                    ▼ AWS 리소스 레이어에서 격리
+   /home 0700, /shared/proj 2775              S3 RTL 버킷 · pcluster · EC2</div>
+
+<div class="box key">
+  <span class="lbl">두 그룹이 격리를 두 겹으로 만든다</span>
+  <p><b>리눅스 그룹</b>(team_a/team_b/eda_proj)은 파일시스템 격리·협업을, <b>IAM 그룹</b>(EDA-TeamA/EDA-TeamB)은 S3 RTL 원본과 AWS 리소스 격리를 담당합니다.
+  결과적으로 RTL은 IAM(S3에서 team_b Deny)과 POSIX(파일 권한) <b>두 겹</b>으로 보호됩니다. 사람 계정 자체는 노드 간 uid/gid 일관성 때문에 <b>AD/LDAP</b>로 관리하는 것이 ParallelCluster 다중사용자의 정공법입니다(§11 참고).</p>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 class="sec" id="s2"><span class="n">2</span>권장 아키텍처 &amp; 데이터 흐름</h2>
+
+<div class="diagram">                    같은 AWS 계정 / 같은 VPC (ap-northeast-2 서울)
+┌──────────────────────────────────────────────────────────────────────┐
+│  [디렉토리 AD/LDAP]  사람 + 리눅스 그룹 (POSIX uid/gid)                │
+│     ├ team_a   (userA1, userA2 …)          ← User A 측                 │
+│     ├ team_b   (userB1, userB2 … 타팀 다수) ← User B 측                │
+│     └ eda_proj (team_a + team_b 공유 협업 그룹)                        │
+│  [IAM 그룹]  AWS API·리소스 접근만                                     │
+│     ├ EDA-TeamA → S3 RTL 버킷 read/write · pcluster                    │
+│     └ EDA-TeamB → S3 RTL 버킷 Deny · 결과 버킷만 read                  │
+│                                                                        │
+│  [ParallelCluster v3]                                                  │
+│     ├ HeadNode / LoginNode  (로그인 · Slurm 스케줄러)                  │
+│     ├ compute queue         (VCS 컴파일 · 시뮬레이션, CPU, 0→N 스케일) │
+│     └ viz queue             (GPU G4/G5, Amazon DCV 데스크톱 → Verdi)   │
+│                                                                        │
+│  [S3]  RTL 원본 · 결과 아카이브   (영구 계층, IAM 그룹으로 통제)       │
+│              │  aws s3 sync (컴파일 노드가 로컬로 복사 — 마운트 아님)  │
+│  [FSx OpenZFS]  ▼  (external attach) — 활성 POSIX 계층 = Shared 전용   │
+│     ├ /shared/tools      0755          ← VCS/Verdi 설치 (읽기 공유)    │
+│     └ /shared/proj       2775 eda_proj ← simv·fsdb 공동 작업 (Shared)  │
+│  [home]  EFS 또는 head node NFS 기본                                   │
+│     ├ /home/userA*       0700          ← team_b 접근 불가 (Private)    │
+│     └ /home/userB*       0700          ← team_a 접근 불가 (Private)    │
+│                                                                        │
+│  [License Server]  lmgrd + snpslmd   (27020@host, 고정 ENI/IP)        │
+└──────────────────────────────────────────────────────────────────────┘</div>
+
+<h3>엔드투엔드 데이터 흐름</h3>
+<div class="diagram">① S3          RTL 원본 (team_a 전용, IAM 그룹 정책으로 통제)
+       │  aws s3 sync  (컴파일 노드가 로컬 디스크로 복사 — 마운트 아님)
+       ▼
+② 컴파일 1대   RTL 트리를 로컬(/tmp)에 받아 vcs 컴파일 → simv (+ .daidir, kdb)
+       │            ※ 컴파일은 노드 1대면 충분 / 산출물만 아래로 출력
+       ▼
+③ OpenZFS     /shared/proj/build/simv     ← 여기 딱 하나 저장 (복사 아님)
+       │  모든 노드가 같은 파일시스템을 NFS로 마운트
+       ▼
+④ 시뮬 N대     Slurm job array로 simv 병렬 실행 (team_b도 제출 가능)
+       │            ※ 여기서 클러스터가 값어치 → regression 분산
+       ▼
+⑤ OpenZFS     /shared/proj/run/testX/testX.fsdb   ← 파형들 저장
+       │
+       ▼
+⑥ GPU + DCV   team_b가 Verdi로 fsdb 파형 분석 (원격 데스크톱)
+       │  (오래된 fsdb는)
+       ▼
+⑦ S3          결과 아카이브 (lifecycle 정책으로 저비용 장기 보관)</div>
+
+<div class="box ok">
+  <span class="lbl">이 흐름이 요구사항을 그대로 구현 — 격리가 두 겹</span>
+  <p>RTL 원본이 S3에만 있고 컴파일 노드가 잠깐 로컬로 받아 쓰므로 team_b는 RTL을 볼 수 없고(격리), <code>simv</code>·<code>fsdb</code>만 <code>/shared</code>에 있어 team_b는 "실행·분석만" 합니다.
+  RTL 격리가 <b>① IAM 그룹 정책(S3 버킷 Deny) + ② 컴파일 노드 로컬 복사본은 노드 종료 시 소멸</b> 두 겹으로 보장됩니다. 파일 협업 격리는 리눅스 그룹 + <code>0700</code>/<code>2775</code>가 담당합니다.</p>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 class="sec" id="s3"><span class="n">3</span>스토리지 티어링 — S3 vs OpenZFS 역할 분담</h2>
+<p>"Shared Area를 그냥 S3에 두면 안 되나?"에 대한 정답은 <b>"활성 작업은 OpenZFS, 원본·아카이브는 S3"로 나누는 것</b>입니다.</p>
+
+<h3>왜 활성 Shared Area를 S3에 직접 두면 안 되나 <span class="pill verified">primary</span></h3>
+<ul>
+  <li><b>Mountpoint for Amazon S3</b>는 공식적으로 <i>"기존 파일 수정 불가, 디렉토리 삭제 불가, 심볼릭 링크·파일 잠금(file locking) 미지원"</i>. VCS 컴파일은 <code>csrc/</code>·<code>simv.daidir</code>를 <b>in-place로 수정</b>하고 심링크·락을 쓰므로 빌드·시뮬이 깨집니다. <span class="cite">(S3 UG — mountpoint)</span></li>
+  <li><b>격리 모델 불일치:</b> 우리 설계의 A/B 격리는 POSIX(<code>0700</code>, setgid) 기반인데, S3 접근제어는 IAM(객체) 기반이라 <code>chmod</code> 권한 모델이 그대로 매핑되지 않습니다.</li>
+  <li>Verdi의 <code>.fsdb</code> 랜덤 액세스 패턴은 객체 스토리지에 부적합.</li>
+</ul>
+
+<h3>S3가 정답인 용도</h3>
+<ul>
+  <li>RTL 릴리스 스냅샷 · 버전 관리 · <b>team_a만 접근하는 원본 저장</b></li>
+  <li>시뮬레이션 결과(<code>fsdb</code>, 로그) <b>장기 아카이브</b> — lifecycle로 저비용 계층 이동</li>
+</ul>
+
+<h3>RTL 읽어 컴파일 — "S3 직접 마운트"가 아니라 "로컬 복사(sync)"</h3>
+<p>RTL은 파일 하나가 아니라 <b>파일 트리</b>입니다 — <code>filelist.f</code>, 다수의 <code>`include</code>(<code>+incdir</code>), SystemVerilog package, 매크로, 그리고 종종 <b>심볼릭 링크</b>로 연결된 IP/라이브러리. VCS는 이 작은 파일 수백~수천 개를 랜덤하게 열고 <code>stat</code>합니다. 이 패턴이 S3 마운트의 약점과 정확히 겹칩니다.</p>
+
+<table>
+  <thead><tr><th></th><th>S3 직접 마운트</th><th>복사(sync) 후 컴파일 <span class="pill practice">권장</span></th></tr></thead>
+  <tbody>
+    <tr><td>심볼릭 링크</td><td>❌ <b>미지원 → 트리에 심링크 있으면 컴파일 실패</b></td><td>✅ 정상</td></tr>
+    <tr><td>파일 락</td><td>❌ 미지원</td><td>✅</td></tr>
+    <tr><td>수천 개 include 랜덤 읽기</td><td>🐢 파일마다 S3 요청 → 느림</td><td>⚡ 로컬 속도</td></tr>
+    <tr><td>재현성</td><td>버킷/네트워크 상태 의존</td><td>스냅샷 고정</td></tr>
+  </tbody>
+</table>
+
+<div class="box warn">
+  <span class="lbl">결정타는 심볼릭 링크 <span class="pill verified">primary</span></span>
+  <p>Mountpoint for S3는 심링크를 지원하지 않는데, 실무 RTL 저장소는 IP/라이브러리 링크에 심링크를 흔히 씁니다. 링크 하나만 있어도 컴파일이 깨집니다.
+  <b>그래서 RTL은 POSIX 파일시스템으로 복사(<code>aws s3 sync</code>)한 뒤 컴파일하는 것이 EDA 표준 관행입니다.</b> S3 직접 마운트는 "심링크 없고 include 단순한 소규모"에서만 예외적으로 씁니다. 구체적 절차는 §4·§6 참고.</p>
+</div>
+
+<div class="box info">
+  <span class="lbl">OpenZFS는 Shared 전용으로 써도 된다</span>
+  <p>이 설계에서 RTL 원본은 S3, 컴파일 복사본은 노드 로컬, <code>simv</code>·<code>fsdb</code>는 <code>/shared</code>에 갑니다. 남는 Private(home)은 개인 스크립트·셸 설정·SSH키 정도로 <b>가볍기 때문에</b>,
+  home은 <b>EFS 또는 head node NFS 기본값</b>으로 두고 <b>비싸고 빠른 OpenZFS는 협업이 실제 일어나는 <code>/shared</code>에 집중</b>시키는 것이 합리적입니다.
+  단, home도 반드시 <b>공유(네트워크) 스토리지</b> 위에 있어야 하며(컴퓨트 노드가 홈·SSH키를 같은 경로로 봐야 함), Private 격리는 어디에 두든 <code>0700</code>이 담당합니다.</p>
+</div>
+
+<div class="box warn">
+  <span class="lbl">중요 — OpenZFS는 S3 네이티브 연동이 없다 <span class="pill verified">primary</span></span>
+  <p>FSx for <b>Lustre</b>는 <b>Data Repository Association(DRA)</b>으로 S3 버킷을 자동 import/export하지만, FSx for <b>OpenZFS는 이 기능이 없습니다.</b>
+  따라서 S3 ↔ OpenZFS 이동은 <code>aws s3 sync</code> 또는 <b>AWS DataSync</b>로 스크립트/스케줄해야 합니다. 자동 S3 연동이 핵심이면 스테이징용으로
+  FSx Lustre를 병행하는 선택지도 있으나, 2인 규모에는 <code>aws s3 sync</code>로 충분합니다.</p>
+</div>
+
+<table>
+  <thead><tr><th></th><th>Amazon S3</th><th>FSx OpenZFS</th><th>EFS / NFS</th><th>FSx Lustre</th></tr></thead>
+  <tbody>
+    <tr><td>역할</td><td>원본·아카이브 (영구)</td><td><b>활성 Shared</b> (POSIX)</td><td>Private home</td><td>대규모 스크래치</td></tr>
+    <tr><td>POSIX 완전 지원</td><td>❌ (수정·락 불가)</td><td>✅</td><td>✅</td><td>✅</td></tr>
+    <tr><td>S3 자동 연동</td><td>—</td><td>❌ (DataSync 필요)</td><td>❌</td><td>✅ DRA</td></tr>
+    <tr><td>격리 방식</td><td>IAM 그룹 정책</td><td>POSIX 권한</td><td>POSIX <code>0700</code></td><td>POSIX 권한</td></tr>
+    <tr><td>이 설계에서</td><td>RTL 원본 + 결과 보관</td><td><b>/shared (simv·fsdb)</b></td><td>/home (가벼움)</td><td>(선택) regression</td></tr>
+  </tbody>
+</table>
+
+<!-- ============ 4 ============ -->
+<h2 class="sec" id="s4"><span class="n">4</span>VCS / simv / fsdb 기본 개념</h2>
+<p>VCS는 컴파일러입니다. gcc가 <code>.c → a.out</code>을 만들듯, <b>VCS는 RTL(Verilog/SystemVerilog) → <code>simv</code>(실행 가능한 시뮬레이터)를 만듭니다.</b></p>
+
+<div class="diagram">   RTL 소스              VCS 컴파일               실행 파일
+ design.v, tb.v   ─────────────────────▶       simv
+ (사람이 쓴 코드)     (vcs -sverilog ...)      (컴파일 결과물)</div>
+
+<p>VCS는 컴파일 방식 시뮬레이터라, RTL을 기계어로 컴파일해 진짜 리눅스 바이너리 <code>simv</code>를 뽑습니다. 그래서 <b><code>./simv</code> 실행에는 RTL 소스가 필요 없습니다</b> — 디자인이 이미 <code>simv</code> 안에 박혀 있으니까요. 이 성질이 "User B는 A가 준비한 환경을 실행만" 요구를 자연스럽게 성립시킵니다.</p>
+
+<h4>simv는 혼자 다니지 않는다 — 한 묶음(bundle)</h4>
+<div class="diagram">/shared/proj/build/
+├── simv                ← 실행 파일 (User B가 ./simv 로 실행)
+├── simv.daidir/        ← 디자인 DB (실행에 필수, 함께 있어야 함)
+│   └── kdb/            ← Verdi 디버깅용 Knowledge DB (vcs -kdb 옵션)
+└── csrc/               ← 중간 산출물 (증분 재컴파일용)</div>
+
+<div class="box info">
+  <span class="lbl">컴파일 입출력 규칙 — 입력은 로컬 복사본, 출력은 Shared</span>
+  <p>① <b>입력</b>: RTL은 S3에서 <b>컴파일 노드 로컬로 복사(<code>aws s3 sync</code>)</b>해 읽습니다(S3 직접 마운트는 심링크·성능 문제, §3 참고). ② <b>출력</b>: <code>simv.daidir</code>에는 컴파일 당시 절대경로가 박히므로,
+  만들어 옮기지 말고 <b>출력 타겟(<code>-o</code>)을 처음부터 <code>/shared</code>로</b> 지정하세요.</p>
+</div>
+
+<pre><code><span class="c"># team_a 컴파일 노드: RTL을 S3에서 로컬로 받아 컴파일, 산출물만 Shared로</span>
+<span class="p">LOCAL</span>=/tmp/build.$SLURM_JOB_ID
+<span class="k">mkdir</span> -p $LOCAL && <span class="k">cd</span> $LOCAL
+<span class="k">aws</span> s3 sync <span class="s">s3://myco-rtl/proj-x/rtl</span>  ./rtl    <span class="c"># ← 트리 통째 복사 (심링크도 실체화)</span>
+<span class="k">vcs</span> -full64 -sverilog -kdb -debug_access+all \
+    -f ./rtl/filelist.f \                    <span class="c"># 입력 = 로컬 복사본 (빠름·심링크 OK)</span>
+    -o <span class="p">/shared/proj/build/simv</span>            <span class="g"># 출력 = OpenZFS Shared로 직접</span>
+<span class="c"># 노드 종료 시 /tmp의 RTL 복사본은 소멸 → team_b에 잔류물 없음(격리)</span></code></pre>
+
+<div class="box warn">
+  <span class="lbl">복사 목적지 두 선택지</span>
+  <p><b>① 컴파일 노드 로컬 디스크</b>(<code>/tmp</code>, 위 예시) — 가장 빠르고, 노드 종료 시 소멸해 격리가 자동. 일회성 컴파일에 <b>기본 권장</b>.<br>
+  <b>② OpenZFS 프라이빗 staging</b>(<code>/shared/staging/rtl</code>, <code>0700 team_a</code>) — 재컴파일·재현이 필요할 때. 단 OpenZFS가 "Shared 전용"에서 살짝 벗어남.</p>
+</div>
+
+<h4>실행하면 무엇이 나오나</h4>
+<div class="diagram">./simv +testcase=test1   →   test1.fsdb (파형)   →   verdi -ssf test1.fsdb   →   GUI 파형 분석</div>
+
+<!-- ============ 5 ============ -->
+<h2 class="sec" id="s5"><span class="n">5</span>시뮬레이션 실행 — Slurm 병렬 regression</h2>
+
+<div class="box danger">
+  <span class="lbl">흔한 오해 — "simv를 각 머신으로 받아서"</span>
+  <p><b>복사하지 않습니다.</b> <code>simv</code>는 OpenZFS <code>/shared/proj/build/</code>에 <b>딱 하나</b> 있고, 모든 컴퓨트 노드가 그 파일시스템을 <b>NFS로 같이 마운트</b>합니다.
+  노드가 10대여도 각자 같은 경로 <code>/shared/proj/build/simv</code>에서 같은 파일을 바로 읽습니다. 복사 단계가 없습니다.</p>
+</div>
+
+<div class="diagram">        FSx OpenZFS  /shared/proj/build/simv   (원본 1개)
+                            │ (NFS 마운트 — 복사 아님)
+        ┌──────────┬────────┼────────┬──────────┐
+     node1      node2     node3    node4      node5    ← 전부 같은 simv를 읽음
+   test1.fsdb  test2.fsdb   ...      ...     test10.fsdb
+        └──────────┴────────┼────────┴──────────┘
+                            ▼
+        FSx OpenZFS  /shared/proj/run/   (fsdb들이 여기 모임)</div>
+
+<h3>컴파일 1대 vs 시뮬레이션 N대</h3>
+<table>
+  <thead><tr><th>작업</th><th>병렬화</th><th>필요 리소스</th></tr></thead>
+  <tbody>
+    <tr><td><b>VCS 컴파일</b></td><td>단일 노드 (내부 gcc 단계만 <code>-j N</code> 멀티코어)</td><td>CPU 좋은 <b>1대</b></td></tr>
+    <tr><td><b>시뮬레이션 실행</b></td><td>테스트케이스 수백 개를 노드에 분산 (regression)</td><td><b>여러 노드</b></td></tr>
+  </tbody>
+</table>
+<p>즉 <b>클러스터가 필요한 건 "많은 시뮬레이션을 동시에" 돌릴 때</b>이지 컴파일 자체가 아닙니다.</p>
+
+<h3>Slurm Job Array로 테스트케이스 분산</h3>
+<p>ParallelCluster의 스케줄러는 <b>Slurm</b>입니다. 서버를 수동으로 띄우는 게 아니라, 잡을 큐에 넣으면 <b>ParallelCluster가 필요한 만큼 노드를 자동으로 켜고(0→N), 끝나면 자동으로 끕니다.</b></p>
+
+<pre><code><span class="c"># run_regression.sbatch</span>
+<span class="c">#!/bin/bash</span>
+<span class="c">#SBATCH --partition=compute</span>
+<span class="c">#SBATCH --array=1-200</span>        <span class="c"># 테스트 200개 → 200개 작업으로 분산</span>
+<span class="c">#SBATCH --job-name=vcs_reg</span>
+
+<span class="c"># 이 array task가 담당할 테스트케이스 하나 선택</span>
+<span class="p">TEST</span>=$(sed -n <span class="s">"${SLURM_ARRAY_TASK_ID}p"</span> /shared/proj/testlist.txt)
+
+<span class="c"># ★ 테스트마다 전용 작업 폴더 (fsdb 덮어쓰기 방지)</span>
+<span class="p">RUNDIR</span>=/shared/proj/run/$TEST
+<span class="k">mkdir</span> -p $RUNDIR && <span class="k">cd</span> $RUNDIR
+
+<span class="c"># 공유된 simv를 실행 (복사 없이 절대경로로 실행)</span>
+/shared/proj/build/simv +testcase=$TEST -l $RUNDIR/sim.log
+<span class="c"># → 이 폴더에 $TEST.fsdb 파형 생성</span></code></pre>
+
+<pre><code><span class="k">sbatch</span> run_regression.sbatch     <span class="c"># 200개가 큐로 → 노드 자동 확장되며 병렬 실행</span>
+<span class="k">squeue</span>                            <span class="c"># 진행 상황 확인</span></code></pre>
+
+<div class="box warn">
+  <span class="lbl">실무 함정 2가지</span>
+  <p><b>① 작업 폴더 분리 필수.</b> 모든 테스트를 같은 디렉토리에서 돌리면 <code>fsdb</code>·런타임 임시파일이 서로 덮어씁니다 → 테스트마다 <code>run/$TEST/</code> 전용 폴더에서 <code>cd</code> 후 실행. (<code>simv</code>는 읽기 전용 공유라 동시 읽기는 문제없음)</p>
+  <p><b>② 라이선스 좌석 = 동시 실행 상한.</b> 실행 중인 <code>simv</code> 하나가 VCS 시뮬레이션 라이선스 1개를 씁니다. 좌석이 20개면 200개 잡 중 20개만 동시 실행되고 나머지는 대기(노드가 남아도). 노드 수뿐 아니라 <b>라이선스 좌석 수도 병렬도를 좌우</b>합니다. <span class="cite">(SOCA의 license_check 패턴 — 잡 제출 전 여유 확인)</span></p>
+</div>
+
+<div class="box info">
+  <span class="lbl">규모 판단</span>
+  <p><b>2인 + 단일 테스트벤치</b> 수준이면 이 job-array 분산까지 안 가도 됩니다. 컴파일 1대에서 <code>simv</code> 만들고 몇 개 돌려보는 정도면 충분하며,
+  regression을 수백 개씩 돌리기 시작할 때 비로소 클러스터 병렬이 값어치를 합니다.</p>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 class="sec" id="s6"><span class="n">6</span>단계별 구축 절차 (콘솔 홈부터)</h2>
+
+<div class="box warn">
+  <span class="lbl">비용 갈림길 먼저</span>
+  <p>사용자가 딱 2명이면 <b>Simple AD</b>(무료~저렴)로 충분합니다. AWS Managed Microsoft AD(Standard)는 서울 리전 기준 시간당 요금이 붙어 월 15만원대가 나옵니다.
+  둘 다 ParallelCluster가 공식 지원하므로 <b>2인 협업이면 Simple AD를 권장</b>합니다. <span class="cite">(multi-user-v3)</span></p>
+</div>
+
+<div class="step-h"><div class="num">1</div><h3>Directory Service 생성</h3></div>
+<ol>
+  <li>콘솔 홈 검색창 → <b>Directory Service</b> → <b>Directories</b> → <b>Set up directory</b></li>
+  <li><b>Simple AD</b> 선택 → Size <b>Small</b> (2인 규모 충분)</li>
+  <li>Directory DNS name 예: <code>eda.corp.local</code>, admin 비밀번호 설정</li>
+  <li>VPC/서브넷은 <b>ParallelCluster와 같은 VPC의 프라이빗 서브넷 2개</b> 지정</li>
+  <li>생성 후 <b>Directory ID · DNS IP 2개</b> 기록 → ParallelCluster config에 사용</li>
+</ol>
+
+<div class="step-h"><div class="num">2</div><h3>사용자·그룹 만들기 — 리눅스 그룹 + IAM 그룹 이원화</h3></div>
+<h4>(2-1) 디렉토리(AD/LDAP)에 사람 + 리눅스 그룹</h4>
+<p>도메인 조인된 관리 EC2(또는 Managed AD 관리 도구)에서 생성:</p>
+<ul>
+  <li>리눅스 그룹 <code>team_a</code> (gid 예: 20001) — userA1, userA2 …</li>
+  <li>리눅스 그룹 <code>team_b</code> (gid 예: 20002) — userB1, userB2 … (타팀 다수)</li>
+  <li><b>공유 협업 그룹 <code>eda_proj</code></b> (gid 예: 20000) — <b>team_a·team_b 구성원 모두 보조그룹으로 포함</b></li>
+  <li>각 사용자 uid는 노드 간 <b>동일</b>하게(AD가 보장)</li>
+</ul>
+<p>포인트: 두 팀은 <code>eda_proj</code>를 <b>공유</b>하되 개인 홈은 각자 소유 — 이 두 축이 "공유 + 격리 동시 달성"의 뼈대입니다.</p>
+<h4>(2-2) IAM 그룹 (AWS 리소스 격리)</h4>
+<ul>
+  <li><b><code>EDA-TeamA</code></b> → S3 RTL 버킷 <code>s3://myco-rtl/*</code> read/write, <code>pcluster</code>/EC2 권한</li>
+  <li><b><code>EDA-TeamB</code></b> → S3 RTL 버킷 <b>Deny</b>, 결과 아카이브 버킷만 read</li>
+</ul>
+<p>→ team_b는 <code>aws s3 sync</code>로 RTL을 <b>받을 수조차 없어</b>, POSIX 이전에 IAM에서 먼저 차단됩니다(격리 첫 겹).</p>
+
+<div class="step-h"><div class="num">3</div><h3>S3 버킷 + FSx OpenZFS 준비</h3></div>
+<div class="box warn">
+  <span class="lbl">검증됨 — ParallelCluster는 FSx OpenZFS를 만들지 않는다</span>
+  <p>기존 볼륨을 <code>VolumeId</code>로 <b>external attach만</b> 지원(3.2.0+). 콘솔 홈 → <b>FSx</b>에서 OpenZFS 파일시스템/볼륨을 <b>먼저 생성</b>해 두세요. <span class="cite">(SharedStorage-v3)</span></p>
+</div>
+<ul>
+  <li><b>S3 버킷</b> 생성 → RTL 원본 프리픽스(예: <code>s3://myco-rtl/proj-x/</code>). 접근은 <b>IAM 그룹 <code>EDA-TeamA</code>에 read/write, <code>EDA-TeamB</code>에 Deny</b>로 통제(§6 STEP 2-2). 결과 아카이브용 별도 버킷도 함께 생성.</li>
+  <li><b>FSx OpenZFS</b> 볼륨 생성 = <b><code>/shared</code> 전용</b>(tools + proj). NFS exports에서 클러스터 서브넷 CIDR 허용, POSIX 권한 존중을 위해 <b><code>root_squash</code> 기본 유지</b>(관리 노드에만 필요 시 <code>no_root_squash</code>). <span class="cite">(FSx OpenZFS NFS exports)</span></li>
+  <li><b>home 스토리지</b> — Private가 가벼우므로 <b>EFS</b> 생성(또는 head node NFS 기본값 사용). <code>/home</code> 마운트용.</li>
+</ul>
+
+<div class="step-h"><div class="num">4</div><h3>ParallelCluster config 확장</h3></div>
+<p>기존 CDK/config에 세 가지를 추가합니다.</p>
+
+<h4>(a) 다중 사용자 — DirectoryService <span class="pill verified">primary</span></h4>
+<pre><code><span class="k">DirectoryService</span>:
+  DomainName: <span class="s">dc=eda,dc=corp,dc=local</span>
+  DomainAddr: <span class="s">ldap://&lt;AD IP 1&gt;,ldap://&lt;AD IP 2&gt;</span>
+  PasswordSecretArn: <span class="s">arn:aws:secretsmanager:ap-northeast-2:...:secret:AdReadOnly</span>
+  <span class="c"># 읽기전용 바인드 계정 비밀번호는 Secrets Manager 저장 → head node sssd.conf에 주입</span></code></pre>
+
+<h4>(b) 공유 스토리지 마운트 — OpenZFS=Shared 전용, home=EFS <span class="pill verified">primary</span></h4>
+<pre><code><span class="k">SharedStorage</span>:
+  - Name: <span class="s">shared</span>          <span class="c"># Shared Area (tools + proj) — OpenZFS 전용</span>
+    StorageType: <span class="s">FsxOpenZfs</span>
+    MountDir: <span class="s">/shared</span>
+    FsxOpenZfsSettings:
+      VolumeId: <span class="s">fsvol-yyyyyyyy</span>   <span class="c"># 미리 만든 기존 볼륨</span>
+  - Name: <span class="s">home</span>            <span class="c"># Private Area(가벼움) — EFS 권장</span>
+    StorageType: <span class="s">Efs</span>
+    MountDir: <span class="s">/home</span>
+    EfsSettings:
+      FileSystemId: <span class="s">fs-xxxxxxxx</span></code></pre>
+<p class="cite">※ home을 별도 마운트하지 않으면 ParallelCluster가 head node의 EBS를 <code>/home</code>으로 NFS export합니다(기본값) — 소규모엔 이것도 충분합니다.</p>
+
+<h4>(c) GPU 시각화 큐 추가 (Verdi용) <span class="pill practice">blog</span></h4>
+<pre><code><span class="k">Scheduling</span>:
+  Scheduler: <span class="s">slurm</span>
+  SlurmQueues:
+    - Name: <span class="s">compute</span>       <span class="c"># VCS 컴파일 · 시뮬레이션 (CPU)</span>
+      ComputeResources:
+        - Name: <span class="s">cpu</span>
+          InstanceType: <span class="s">c6i.8xlarge</span>
+          MinCount: 0
+    - Name: <span class="s">viz</span>           <span class="c"># Verdi GUI (GPU, DCV)</span>
+      ComputeResources:
+        - Name: <span class="s">gpu</span>
+          InstanceType: <span class="s">g5.2xlarge</span>   <span class="c"># 또는 g4dn.xlarge</span>
+          MinCount: 0                <span class="c"># 안 쓰면 0대 → 비용 0</span>
+          MaxCount: 4</code></pre>
+<pre><code><span class="k">pcluster</span> update-cluster -n &lt;cluster&gt; -c cluster-config.yaml</code></pre>
+
+<div class="step-h"><div class="num">5</div><h3>Synopsys 툴 설치 + 라이선스 서버 (User A가 준비)</h3></div>
+<ol>
+  <li><b>라이선스 서버 EC2 1대</b> 생성. <span class="pill verified">primary</span> <b>고정 ENI + 고정 IP 필수</b> — FlexNet은 MAC/hostid에 라이선스를 묶으므로 재부팅 시 MAC이 바뀌면 라이선스가 깨집니다. 별도 생성한 ENI를 붙이세요. <span class="cite">(FlexLM on AWS)</span></li>
+  <li>서버에서 <code>lmgrd</code>가 <code>snpslmd</code>를 기동, 포트 예 <code>27020</code> 오픈(보안그룹은 클러스터 서브넷만 허용).</li>
+  <li><b>툴 설치 위치 = <code>/shared/tools</code></b> (OpenZFS 공유). VCS/Verdi를 여기 설치 → 모든 노드가 같은 경로로 접근.</li>
+  <li><b>환경 공유</b> — 공통 스크립트나 environment modules(<code>module load vcs</code>)로 두 사용자가 동일 로드:</li>
+</ol>
+<pre><code><span class="k">export</span> SNPSLMD_LICENSE_FILE=<span class="s">27020@&lt;license-server-ip&gt;</span>   <span class="c"># 권장 변수</span>
+<span class="k">export</span> VCS_HOME=<span class="s">/shared/tools/synopsys/vcs/&lt;ver&gt;</span>
+<span class="k">export</span> VERDI_HOME=<span class="s">/shared/tools/synopsys/verdi/&lt;ver&gt;</span>
+<span class="k">export</span> PATH=<span class="s">$VCS_HOME/bin:$VERDI_HOME/bin:$PATH</span></code></pre>
+
+<div class="step-h"><div class="num">6</div><h3>검증</h3></div>
+<ul>
+  <li>team_a 사용자 로그인 → <code>ls /home/userB1</code> → <b>Permission denied</b> ✅</li>
+  <li>team_b 사용자 로그인 → <code>ls /home/userA1</code> → <b>Permission denied</b> ✅</li>
+  <li>team_b 사용자 → <code>aws s3 ls s3://myco-rtl/</code> → <b>AccessDenied</b> (IAM 격리) ✅</li>
+  <li>두 팀 모두 <code>/shared/proj</code>에서 파일 생성/수정 가능, 새 파일 그룹이 <code>eda_proj</code>인지 확인 ✅</li>
+  <li><code>lmstat -a -c 27020@&lt;host&gt;</code>로 라이선스 서버 도달 확인</li>
+  <li>team_b 사용자가 viz 큐 DCV 세션 → Verdi로 <code>fsdb</code> 로드/디버깅 ✅</li>
+</ul>
+
+<!-- ============ 7 ============ -->
+<h2 class="sec" id="s7"><span class="n">7</span>POSIX 권한 설계 (Private 격리 + Shared 협업)</h2>
+<p>그림의 요구사항을 실제로 구현하는 핵심 파트입니다. <span class="pill practice">표준 리눅스 멀티유저 관행 — setgid/ACL 근거는 리서치에서 supporting claim으로 확인</span></p>
+
+<pre><code><span class="c"># === Private Area (home = EFS) — 상호 접근 완전 차단 ===</span>
+<span class="c">#     각 사용자 홈은 본인 소유 0700 (예: userA1은 team_a, userB1은 team_b)</span>
+<span class="k">install</span> -d -m <span class="g">0700</span> -o userA1 -g team_a  /home/userA1
+<span class="k">install</span> -d -m <span class="g">0700</span> -o userB1 -g team_b  /home/userB1
+<span class="c">#  0700 = 소유자만 rwx → team_b는 team_a의 홈 진입 불가 (역도 성립)</span>
+
+<span class="c"># === Shared: 툴 설치 — 모두 읽기/실행, 쓰기는 관리자만 ===</span>
+<span class="k">install</span> -d -m <span class="g">0755</span> -o root  -g eda_proj /shared/tools
+
+<span class="c"># === Shared: 공동 프로젝트 — 두 팀이 함께 읽고 쓰기 ===</span>
+<span class="k">install</span> -d -m <span class="g">2775</span> -o root -g eda_proj /shared/proj
+<span class="c">#  '2' = setgid → 이 안에서 새로 만든 파일/폴더는 그룹이 자동으로 eda_proj 상속</span>
+<span class="c">#  → team_a가 만든 컴파일 산출물을 team_b가 바로 rw 가능</span></code></pre>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--red)"></span> <code>0700</code> Private — 소유자 전용</span>
+  <span><span class="dot" style="background:var(--amber)"></span> <code>0755</code> 공유 읽기 전용</span>
+  <span><span class="dot" style="background:var(--green)"></span> <code>2775</code> setgid 공동 쓰기</span>
+</div>
+
+<h4>추가 권장</h4>
+<ul>
+  <li>협업자 로그인 프로파일에 <b><code>umask 002</code></b> 설정 → 새 파일이 <code>664</code>(그룹 쓰기 가능)로 생성. (기본 <code>022</code>면 그룹 쓰기가 막혀 협업이 깨짐)</li>
+  <li>더 세밀한 제어가 필요하면 <b>NFSv4 ACL / <code>setfacl</code></b>로 "특정 사용자에게만 rwx" 부여 가능(그룹 안 만들고도). 기본 ACL(<code>-d</code>)로 상속 지정. <span class="cite">(setfacl — supporting)</span></li>
+</ul>
+
+<table>
+  <thead><tr><th>경로</th><th>스토리지</th><th>권한</th><th>소유자:그룹</th><th>효과</th></tr></thead>
+  <tbody>
+    <tr><td><code>/home/userA1</code></td><td>EFS</td><td><code>0700</code></td><td>userA1:team_a</td><td>team_b 접근 불가 (Private)</td></tr>
+    <tr><td><code>/home/userB1</code></td><td>EFS</td><td><code>0700</code></td><td>userB1:team_b</td><td>team_a 접근 불가 (Private)</td></tr>
+    <tr><td><code>/shared/tools</code></td><td>OpenZFS</td><td><code>0755</code></td><td>root:eda_proj</td><td>모두 읽기/실행, 관리자만 쓰기</td></tr>
+    <tr><td><code>/shared/proj</code></td><td>OpenZFS</td><td><code>2775</code></td><td>root:eda_proj</td><td>두 팀 협업 (setgid 그룹 상속)</td></tr>
+    <tr><td><code>s3://myco-rtl/*</code></td><td>S3</td><td>IAM</td><td>EDA-TeamA only</td><td>team_b Deny (RTL 원본 격리)</td></tr>
+  </tbody>
+</table>
+
+<!-- ============ 8 ============ -->
+<h2 class="sec" id="s8"><span class="n">8</span>Amazon DCV로 Verdi GUI 디버깅</h2>
+<p>Verdi는 GPU 가속이 유리한 파형/스키매틱 GUI입니다. 사용자별 <b>격리된</b> 원격 데스크톱 세션으로 제공합니다.</p>
+
+<h3>간단한 경로 (2인 권장) <span class="pill practice">blog</span></h3>
+<p>각 사용자가 SSH 로그인 후, viz 큐에 <b>자기 소유의 DCV 세션을 Slurm 배치 잡</b>으로 제출:</p>
+<pre><code><span class="c">#SBATCH --partition=viz</span>
+<span class="c">#SBATCH --exclusive</span>        <span class="c"># 사용자마다 전용 인스턴스 → 세션 격리</span>
+<span class="c">#SBATCH --gpus 1</span>           <span class="c"># 사용자별 GPU 할당</span>
+<span class="k">dcv</span> create-session $SLURM_JOBID   <span class="c"># 세션 소유자 = 잡 제출한 리눅스 사용자</span></code></pre>
+<p>세션은 <b>잡을 제출한 리눅스 사용자 소유</b>로 생성되므로 User A 세션에 User B가 붙을 수 없습니다(OS 사용자 격리). AD 모드에서는 배치 스크립트의 로컬 password 라인을 제거하고 AD 자격증명으로 인증합니다. Verdi는 이 GPU 세션의 데스크톱에서 실행 → <code>fsdb</code> 파형 디버깅. <span class="cite">(HPC blog — elastic viz queues)</span></p>
+
+<h3>규모가 커질 때 (선택) <span class="pill verified">primary</span></h3>
+<p><b>DCV Session Manager(Broker) + Connection Gateway + NLB</b> 조합. Gateway가 다수 DCV 서버의 단일 접속점이 되고, Broker가 Session Resolver로 각 연결을 올바른 호스트로 라우팅합니다. 클라이언트는 <code>NLB주소:8443/?authToken=...#session-id</code>로 접속. aws-samples <code>dcv-samples/cdk/dcv-gw-sm-without-pipelines</code>가 이 스택(Broker 1, Gateway ASG, NLB, IAM/SG)을 그대로 배포합니다. <span class="cite">(dcv/sm-admin/configure, dcv-samples CDK)</span></p>
+
+<div class="box danger">
+  <span class="lbl">반증됨 <span class="pill refuted">refuted 0-3</span></span>
+  <p>"DCV Session Manager의 external authorization server가 세션 접근 인가 메커니즘이다"라는 주장은 검증에서 <b>기각</b>됐습니다.
+  세션 소유권/접근은 <b>세션 owner + permissions</b>로 통제하는 것이 정확합니다. 대규모 인가 설계 시 이 부분은 DCV Session Manager Admin Guide로 별도 확인하세요.</p>
+</div>
+
+<div class="box info">
+  <span class="lbl">DCV 라이선스 <span class="pill verified">primary</span></span>
+  <p>EC2에서 DCV 서버는 <b>별도 라이선스 서버가 불필요</b>합니다(S3 경유로 라이선스 확인). ParallelCluster가 head node IAM에 필요한 권한을 자동 부여합니다. <span class="cite">(dcv-v3)</span></p>
+</div>
+
+<!-- ============ 9 ============ -->
+<h2 class="sec" id="s9"><span class="n">9</span>Synopsys 라이선스 서버</h2>
+<div class="box info">
+  <span class="lbl">검증됨 <span class="pill verified">primary</span></span>
+  <p>Synopsys Common Licensing(SCL)은 FlexNet 기반으로 두 데몬을 씁니다 — <code>lmgrd</code>(FlexNet 라이선스 매니저)와 <code>snpslmd</code>(VCS/Verdi 등에 feature 라이선스를 서빙하는 Synopsys 벤더 데몬).
+  클라이언트는 <code>SNPSLMD_LICENSE_FILE</code>(권장) 또는 <code>LM_LICENSE_FILE</code>에 <code>port@host</code>(예: <code>27020@host</code>)로 서버를 지정하므로,
+  <b>다수 컴퓨트 노드가 하나의 공유 라이선스 서버</b>를 가리킬 수 있습니다. 단일 리눅스 서버가 네트워크의 모든 클라이언트에 TCP로 서빙합니다. <span class="cite">(Synopsys licensing)</span></p>
+</div>
+<ul>
+  <li>라이선스 서버는 <b>고정 ENI/EIP</b>로 hostid 고정 (§6 STEP 5 참고).</li>
+  <li>동시 실행 <code>simv</code> 수 ≤ 확보한 시뮬레이션 라이선스 좌석 수 (§5 함정 ② 참고).</li>
+</ul>
+
+<!-- ============ 10 ============ -->
+<h2 class="sec" id="s10"><span class="n">10</span>Verdi 소스 디버깅 vs RTL 은닉 (설계 갈림길)</h2>
+<p><code>simv</code> 실행·파형 분석은 RTL 없이 됩니다. 하지만 Verdi에서 <b>신호 클릭 → RTL 소스 라인 추적/스키매틱</b>까지 하려면 Verdi가 원본 소스에 접근해야 합니다. 요구사항에 따라 두 시나리오로 갈립니다.</p>
+
+<table>
+  <thead><tr><th>team_b에게 RTL을…</th><th>RTL 위치</th><th>team_b가 할 수 있는 Verdi 디버깅</th></tr></thead>
+  <tbody>
+    <tr><td><b>(a) 파형만 보면 됨 / IP 보호</b></td><td>S3에만 (team_b는 IAM Deny)</td><td>파형(fsdb) + 넷리스트 레벨 디버깅. <b>소스 라인 추적 ❌</b> — 격리·IP보호 최적</td></tr>
+    <tr><td><b>(b) 소스 보며 디버깅해야 함</b></td><td>필요한 소스를 <code>/shared/proj</code>에 노출</td><td>소스 + 파형 풀 디버깅. 은닉이 필요하면 <code>vcs +protect</code> / IEEE-1735 암호화 IP</td></tr>
+  </tbody>
+</table>
+
+<div class="box key">
+  <span class="lbl">권장</span>
+  <p>같은 회사 내부 협업이고 소스 공유가 괜찮으면 <b>(b)</b> — 필요한 RTL을 <code>/shared</code>에 두면 가장 단순합니다.
+  RTL IP를 보호해야 하면 <b>(a)</b> — RTL을 <b>S3에만</b> 두는 §2 설계가 최적이며, team_b는 파형·넷리스트 레벨로만 디버깅합니다.
+  두 방식 모두 <code>simv</code> "실행만" 요구는 동일하게 만족합니다.</p>
+</div>
+
+<!-- ============ 11 ============ -->
+<h2 class="sec" id="s11"><span class="n">11</span>주의사항 &amp; 함정</h2>
+<ol>
+  <li><b>FSx OpenZFS는 ParallelCluster가 안 만든다</b> → 먼저 콘솔에서 생성 후 <code>VolumeId</code> attach. <span class="pill verified">primary</span></li>
+  <li><b>OpenZFS는 S3 네이티브 연동이 없다</b> → <code>aws s3 sync</code> / DataSync로 이동. 자동 연동이 필요하면 스테이징에 FSx Lustre(DRA) 고려. <span class="pill verified">primary</span></li>
+  <li><b>S3를 활성 Shared로 직접 쓰면 안 됨</b> → Mountpoint는 파일 수정·락 미지원, VCS 빌드가 깨짐. S3는 원본·아카이브 전용. <span class="pill verified">primary</span></li>
+  <li><b>RTL은 S3 직접 마운트 말고 로컬 복사 후 컴파일</b> → RTL 트리의 심볼릭 링크는 Mountpoint에서 미지원이라 컴파일이 깨지고, 수천 개 include 랜덤 읽기도 느림. <code>aws s3 sync</code>로 노드 로컬(<code>/tmp</code>)에 받아 컴파일. <span class="pill verified">primary</span></li>
+  <li><b>심링크 실체화</b> → RTL을 S3에 올릴 때 <code>--follow-symlinks</code>(기본)로 실체 파일화하거나, 링크 구조가 의미 있으면 tar로 묶어 올릴 것. <span class="pill practice">실무</span></li>
+  <li><b>IAM 그룹 ≠ 파일 격리</b> → IAM 그룹은 S3·AWS 리소스만 통제. 파일 격리(홈 상호차단, /shared 협업)는 반드시 <b>리눅스 그룹 + POSIX 권한</b>으로. 두 그룹을 각 레이어에 병행. <span class="pill verified">primary</span></li>
+  <li><b>2인이면 AD가 과할 수 있다</b> → Simple AD로 비용 절감. 단, 무-AD 로컬유저는 노드 간 uid 불일치로 Slurm 스케줄링이 깨질 수 있어 v3.1.1+ 다중사용자에서 비권장. <span class="pill verified">primary</span></li>
+  <li><b>공식 aws-samples ParallelCluster EDA 워크샵은 "Coming soon" 상태로 미완성</b> → 턴키 레퍼런스 없음. 완성본은 IBM Spectrum LSF 워크샵(Slurm 아님)뿐. 이 문서의 절차를 조합해 직접 구성해야 함. <span class="pill verified">primary</span></li>
+  <li><b>simv 경로 의존성</b> → Private에서 만들어 옮기면 <code>simv.daidir</code> 절대경로로 깨질 수 있음. 처음부터 <code>/shared</code>로 컴파일. <span class="pill practice">실무</span></li>
+  <li><b>umask 함정</b> → 협업자 umask가 <code>022</code>면 공유영역 그룹 쓰기가 막힘 → <code>002</code>. <span class="pill practice">실무</span></li>
+  <li><b>fsdb 덮어쓰기 · 라이선스 좌석 상한</b> → 테스트별 전용 폴더 + 좌석 수 = 동시 실행 상한. <span class="pill practice">실무</span></li>
+  <li><b>FlexNet MAC 고정</b> → 라이선스 서버는 고정 ENI/EIP. <span class="pill verified">primary</span></li>
+  <li><b>DCV 세션 인가</b> → external authorization server 주장은 반증됨. 세션 owner + permissions로 통제. <span class="pill refuted">refuted</span></li>
+</ol>
+
+<!-- ============ 12 ============ -->
+<h2 class="sec" id="s12"><span class="n">12</span>근거 출처</h2>
+
+<h4>AWS 공식 문서 (직접 확인 + 리서치 검증)</h4>
+<ul class="src-list">
+  <li>ParallelCluster 다중 사용자: https://docs.aws.amazon.com/parallelcluster/latest/ug/multi-user-v3.html</li>
+  <li>DirectoryService 설정: https://docs.aws.amazon.com/parallelcluster/latest/ug/DirectoryService-v3.html</li>
+  <li>AD 통합 튜토리얼: https://docs.aws.amazon.com/parallelcluster/latest/ug/tutorials_05_multi-user-ad.html</li>
+  <li>IAM 역할(2계층): https://docs.aws.amazon.com/parallelcluster/latest/ug/iam-roles-in-parallelcluster-v3.html</li>
+  <li>SharedStorage: https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html</li>
+  <li>DCV on ParallelCluster: https://docs.aws.amazon.com/parallelcluster/latest/ug/dcv-v3.html</li>
+  <li>DCV Session Manager: https://docs.aws.amazon.com/dcv/latest/sm-dev/what-is-sm.html · https://docs.aws.amazon.com/dcv/latest/sm-admin/configure.html</li>
+  <li>FSx OpenZFS NFS exports: https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/</li>
+  <li>FSx Lustre S3 연동(DRA): https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-linked-dra.html</li>
+  <li>Mountpoint for Amazon S3 제약: https://docs.aws.amazon.com/AmazonS3/latest/userguide/mountpoint.html</li>
+</ul>
+
+<h4>AWS 블로그 / 샘플</h4>
+<ul class="src-list">
+  <li>Multiuser via AD: https://aws.amazon.com/blogs/hpc/introducing-aws-parallelcluster-multiuser-support-via-active-directory/</li>
+  <li>Elastic viz queues (DCV, Verdi GUI 핵심): https://aws.amazon.com/blogs/hpc/elastic-visualization-queues-with-nice-dcv-in-aws-parallelcluster/</li>
+  <li>DCV Broker/Gateway CDK: https://github.com/aws-samples/dcv-samples/tree/main/cdk/dcv-gw-sm-without-pipelines</li>
+  <li>EDA 원격데스크톱 참조: https://github.com/aws-samples/aws-remote-desktop-for-eda</li>
+  <li>FlexLM on AWS: https://swsmith.cc/posts/flexlm.html</li>
+  <li>Scale-Out Computing on AWS (라이선스 체크 패턴): https://awslabs.github.io/scale-out-computing-on-aws-documentation/</li>
+</ul>
+
+<h4>Synopsys</h4>
+<ul class="src-list">
+  <li>SCL (lmgrd/snpslmd, SNPSLMD_LICENSE_FILE): https://www.synopsys.com/support/licensing-installation-computeplatforms/licensing.html</li>
+</ul>
+
+<div class="tldr">
+  <b>최종 요약.</b> 격리는 <b>두 겹</b> — 파일은 리눅스 그룹(<code>team_a</code>/<code>team_b</code>/<code>eda_proj</code>) + <code>0700</code>·<code>2775</code>, AWS 리소스는 IAM 그룹(<code>EDA-TeamA</code>/<code>EDA-TeamB</code>)으로.
+  RTL 원본은 S3에 두고 team_b엔 IAM Deny, 컴파일 노드가 <code>aws s3 sync</code>로 로컬에 받아(마운트 아님) 컴파일해 <code>simv</code> 한 묶음을 OpenZFS <code>/shared</code>에 저장한다.
+  OpenZFS는 <b>/shared 전용</b>, 가벼운 home은 EFS/NFS로 둔다. ParallelCluster에 <code>DirectoryService</code>(Simple AD)로 사용자를 붙이고, team_b는 Slurm으로 <code>simv</code>를 병렬 실행해 <code>fsdb</code>를 만든 뒤
+  GPU <code>viz</code> 큐의 Amazon DCV 데스크톱에서 Verdi로 분석한다. 툴은 <code>/shared/tools</code>, 라이선스는 고정 IP FlexNet 서버 1대로 공유한다.
+</div>
+
+<footer>
+  <p>본 문서는 AWS 공식 문서 직접 확인 + 다중 소스 딥리서치(103개 에이전트, 24개 검증 완료 / 1개 반증) 결과를 종합한 실무 가이드입니다.
+  배지 표기: <span class="pill verified">primary</span> AWS 공식 문서로 검증 · <span class="pill practice">실무/blog</span> 표준 관행 또는 단일 블로그 근거 · <span class="pill refuted">refuted</span> 검증에서 기각.
+  구성 값(uid/gid, 인스턴스 타입, 포트, 버전)은 예시이며 실제 환경에 맞게 조정하세요.</p>
+  <p>작성일 2026-07-09 · 리전 기준 ap-northeast-2 (서울)</p>
+</footer>
+
+</div>
+</body>
+</html>

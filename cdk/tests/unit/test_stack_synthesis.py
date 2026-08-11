@@ -169,6 +169,12 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
     template.has_resource_properties(
         "AWS::EC2::Instance",
         {
+            "MetadataOptions": {
+                "HttpEndpoint": "enabled",
+                "HttpPutResponseHopLimit": 1,
+                "HttpTokens": "required",
+                "InstanceMetadataTags": "disabled",
+            },
             "NetworkInterfaces": [
                 {
                     "DeviceIndex": "0",

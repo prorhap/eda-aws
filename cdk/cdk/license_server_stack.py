@@ -20,6 +20,7 @@ EDA 라이센스 서버용 EC2 인스턴스 생성.
         * TCP 27020    from sg_cluster_nodes (default snpslmd port)
           → 실제 라이선스 파일에도 동일한 manager/vendor 포트를 고정
   - Root EBS: 30 GiB gp3, KMS 암호화
+  - IMDS: IMDSv2만 허용 (token required, hop limit 1)
   - user_data: 없음
   - EBS snapshot: 없음
 
@@ -166,6 +167,12 @@ class LicenseServerStack(Stack):
             iam_instance_profile=instance_profile.ref,
             key_name=self.key_pair.key_pair_name,
             monitoring=True,
+            metadata_options=ec2.CfnInstance.MetadataOptionsProperty(
+                http_endpoint="enabled",
+                http_tokens="required",
+                http_put_response_hop_limit=1,
+                instance_metadata_tags="disabled",
+            ),
             block_device_mappings=[
                 ec2.CfnInstance.BlockDeviceMappingProperty(
                     device_name="/dev/sda1",
