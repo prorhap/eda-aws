@@ -44,8 +44,9 @@ Pass via `cdk -c key=value` or `cdk.json`. setup.sh forwards
 | `eda:enable_login_node` | `true` | bool | Whether to include ELB/ASG endpoints |
 | `eda:enable_ssm` | `false` | bool | Whether to include SSM/SSM Messages/EC2 Messages endpoints |
 | `eda:enable_openzfs` | `true` | bool | Create FSx OpenZFS |
-| `eda:openzfs_size_gib` | `10240` | int | OpenZFS capacity (64 – 524288) |
-| `eda:openzfs_throughput` | `2560` | int | MBps: 160·320·640·1280·2560·3840·5120·7680·10240 |
+| `eda:openzfs_size_gib` | `32768` | int | OpenZFS capacity (16384 – 32768; 16–32 TiB project range) |
+| `eda:openzfs_throughput` | `10240` | int | MBps: 160·320·640·1280·2560·3840·5120·7680·10240 |
+| `eda:openzfs_iops` | `400000` | int | User-provisioned IOPS; validated against storage capacity, throughput tier, and the Seoul regional limit |
 | `eda:enable_ontap` | `false` | bool | Create FSx ONTAP |
 | `eda:ontap_size_gib` | `10240` | int | ONTAP capacity (1024 – 1048576) |
 | `eda:ontap_tput_per_ha` | `3072` | int | MBps/HA: 1536·3072·6144 |
@@ -70,7 +71,8 @@ cdk diff   -c eda:vpc_id=vpc-xxx -c eda:subnet_id=subnet-xxx
 cdk deploy --all --require-approval never \
   -c eda:vpc_id=vpc-xxx -c eda:subnet_id=subnet-xxx \
   -c eda:stack_prefix=MyEda \
-  -c eda:enable_openzfs=1 -c eda:openzfs_size_gib=320
+  -c eda:enable_openzfs=1 -c eda:openzfs_size_gib=32768 \
+  -c eda:openzfs_throughput=10240 -c eda:openzfs_iops=400000
 
 # A specific stack only
 cdk deploy EdaStorage -c eda:vpc_id=... -c eda:subnet_id=...
@@ -95,6 +97,10 @@ injects these values into the neutral placeholders (`${BASE.*}`,
   `storage_capacity_quota_gib` must be ≤ parent FS capacity, and the total
   reservation must be ≤ parent capacity. `storage_stack.py` scales tools≈10%
   / work≈40% / scratch≈40% in proportion to the parent capacity.
+- **OpenZFS performance validation**: The default `SINGLE_AZ_HA_2` file
+  system uses 10,240 MBps and 400,000 user-provisioned IOPS. The stack checks
+  the minimum IOPS per GiB, throughput-tier IOPS maximum, and Seoul's
+  50 IOPS/GiB regional limit before synthesizing.
 - **VPC endpoint dedup**:
   `_create_vpc_endpoints_if_enabled` in `base_stack.py` queries existing
   endpoints with boto3 at synth time and skips reusable external endpoints.

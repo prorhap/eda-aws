@@ -58,8 +58,8 @@ state. Preflight requires `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
 `ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
 `ec2:DescribeSecurityGroups`, `ec2:DescribeInstanceTypeOfferings`,
 `ec2:DescribeVpcAttribute`, `cloudformation:ListStacks`, and
-`cloudformation:ListStackResources`, in addition to the permissions required
-to deploy the stacks.
+`cloudformation:ListStackResources`, and `servicequotas:GetServiceQuota`, in
+addition to the permissions required to deploy the stacks.
 
 ### 2.2 Install required tools
 
@@ -178,12 +178,12 @@ setup.sh stages:
 | `REGION` | `ap-northeast-2` | Deployment region |
 | `STACK_PREFIX` | `Eda` | Prefix for CDK stacks, physical resources, and SSM paths |
 | `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `2560` | FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `10240` / `400000` | FSx OpenZFS maximum-performance baseline |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | Mandatory EDA license server instance |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` defaults |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended) |
-| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable Login Node DCV and restrict its source network |
+| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable DCV, select a `g6.4xlarge` Login Node, and restrict its source network |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
 | `ENABLE_SSM` | `0` | Allow Session Manager access |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | Skip stages |
@@ -191,6 +191,10 @@ setup.sh stages:
 The quota/reservation of FSx OpenZFS child volumes (tools/work/scratch) is
 auto-scaled in proportion to the parent capacity (to avoid the constraint
 where a quota larger than the parent is not allowed).
+
+The default OpenZFS throughput and IOPS values consume the default regional
+quotas in Seoul. The setup preflight checks the configured quota values; request
+an increase before deploying another OpenZFS file system in the same Region.
 
 ---
 
@@ -228,7 +232,9 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 
 This project uses ParallelCluster-managed DCV on the Login Node instead of a
 separate DCV EC2 stack. It does not download packages from the internet, and
-license checks use the existing S3 Gateway endpoint.
+license checks use the existing S3 Gateway endpoint. When DCV is enabled,
+`setup.sh` selects `g6.4xlarge` (one NVIDIA L4 GPU); otherwise the Login Node
+remains `r7i.2xlarge`.
 
 ```bash
 ENABLE_DCV=1 DCV_ALLOWED_IPS=172.16.4.0/24 \

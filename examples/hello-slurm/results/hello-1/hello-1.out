@@ -2,8 +2,8 @@
 Host:         ip-10-0-7-92
 Date:         Fri May  8 09:32:56 UTC 2026
 JobID:        1
-Partition:    eda-r8i
-Nodes:        eda-r8i-dy-r128-1
+Partition:    eda-x8aedz
+Nodes:        eda-x8aedz-dy-x8aedz24-1
 CPUs/task:    2
 Working dir:  /fsxz/work/jobs/ec2-user/hello-20260508-182718
 FSx mounts:

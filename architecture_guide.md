@@ -40,10 +40,10 @@ flowchart LR
 
         subgraph VPC["Existing VPC (import)"]
             subgraph PRIVATE["Existing Private Subnet"]
-                LOGIN["Login Node<br/>r7i.2xlarge<br/>SSH + Verdi + DCV"]
+                LOGIN["Login Node<br/>r7i.2xlarge or g6.4xlarge<br/>SSH + Verdi + DCV"]
                 HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld"]
-                C1["Compute<br/>r8i.32xlarge"]
-                C2["Compute<br/>r8i.32xlarge"]
+                C1["Compute<br/>x8aedz.24xlarge<br/>7.6 TB local NVMe"]
+                C2["Compute<br/>x8aedz.24xlarge<br/>7.6 TB local NVMe"]
 
                 subgraph ZFS["FSx for OpenZFS (default)<br/>SINGLE_AZ_HA_2"]
                     ZT["/fsxz/tools"]
@@ -85,10 +85,12 @@ Node's Slurm automatically provisions Compute Nodes.
 | Role | Instance | Count | Use |
 |---|---|---:|---|
 | Head Node | `m7i.xlarge` | 1 | Slurm controller |
-| Login Node | `r7i.2xlarge` | 1 | SSH, Verdi GUI, Amazon DCV |
-| Compute | `r8i.32xlarge` | 0–2 | VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
+| Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 | `r7i.2xlarge` normally; `g6.4xlarge` with DCV |
+| Compute | `x8aedz.24xlarge` | 0–2 | PowerArtist scratch, VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
 
-Total capacity: 256 vCPU / 2 TiB memory with 2 Compute nodes. [R15][R16][R17]
+Total capacity: 192 vCPU / 6 TiB memory / 15.2 TB ephemeral local NVMe with
+2 Compute nodes. The preflight checks the selected single-subnet AZ at runtime;
+the current Seoul offering was verified in `ap-northeast-2a`. [R15][R16][R17]
 
 ---
 
@@ -101,22 +103,28 @@ The simplest and fastest configuration as the Day 1 default storage.
 | Item | Value |
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (gen 2, NVMe L2ARC cache) |
-| Storage capacity | 320 GiB (range: 64 GiB – 512 TiB) |
-| Throughput | 2,560 MBps (allowed: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
-| SSD IOPS | Automatic (3 IOPS/GiB) |
+| Storage capacity | 32 TiB / 32,768 GiB (project range: 16–32 TiB) |
+| Throughput | 10,240 MBps (maximum tier) |
+| SSD IOPS | 400,000, `USER_PROVISIONED` (maximum at this tier) |
+| File-server cache | 512 GiB memory and 2,560 GiB NVMe L2ARC |
 | Backup retention | 7 days |
 
 **Volume layout**
 
 | Volume | Mount | Quota | Reservation | Compression | Purpose |
 |---|---|---:|---:|---|---|
-| `fsxz_tools` | `/fsxz/tools` | 64 GiB | 16 GiB | ZSTD | EDA tool installs · wrappers · env |
-| `fsxz_work` | `/fsxz/work` | 128 GiB | 64 GiB | ZSTD | RTL · TB · results · coverage |
-| `fsxz_scratch` | `/fsxz/scratch` | 128 GiB | 0 (thin) | LZ4 | Job workdir |
+| `fsxz_tools` | `/fsxz/tools` | 3,276 GiB | 655 GiB | ZSTD | EDA tool installs · wrappers · env |
+| `fsxz_work` | `/fsxz/work` | 13,107 GiB | 6,553 GiB | ZSTD | RTL · TB · results · coverage |
+| `fsxz_scratch` | `/fsxz/scratch` | 13,107 GiB | 0 (thin) | LZ4 | Shared job staging / non-local temporary data |
 
 The setup calculates these quotas and reservations from the configured parent
-capacity. The values above are the layout produced by the 320 GiB project
+capacity. The values above are the layout produced by the 32 TiB project
 default.
+
+The 10,240 MBps / 400,000 IOPS setting consumes the default account-level
+OpenZFS throughput and disk-IOPS quotas in Seoul. It is deliberately a
+maximum-performance baseline: do not create another OpenZFS file system in the
+Region without a quota increase. [R1S-1][R1S-2]
 
 ### 4.2 FSx for NetApp ONTAP (optional)
 
@@ -280,8 +288,8 @@ cluster security group.
 
 | Item | Value |
 |---|---|
-| Number of queues | 1 (`eda-r8i`) |
-| Compute resource | `r8i.32xlarge`, `MinCount=0`, `MaxCount=2` |
+| Number of queues | 1 (`eda-x8aedz`) |
+| Compute resource | `x8aedz.24xlarge`, `MinCount=0`, `MaxCount=2` |
 | `EnableMemoryBasedScheduling` | `true` |
 | `JobExclusiveAllocation` | `false` (better for many small jobs) |
 | `ScaledownIdletime` | 15 min |
@@ -387,8 +395,8 @@ AWS Console.
 | Role | Instance | Count |
 |---|---|---:|
 | Head Node | `m7i.xlarge` | 1 |
-| Login Node | `r7i.2xlarge` | 1 |
-| Compute | `r8i.32xlarge` | 0–2 |
+| Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 |
+| Compute | `x8aedz.24xlarge` | 0–2 |
 | License server (required) | `m7i.large` | 1 |
 
 ### Storage
@@ -396,8 +404,8 @@ AWS Console.
 | Item | OpenZFS (default) | ONTAP (optional) |
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
-| Capacity | 320 GiB | 10 TiB |
-| Throughput | 2,560 MBps | 3,072 MBps × 1 HA |
+| Capacity | 32 TiB | 10 TiB |
+| Throughput / IOPS | 10,240 MBps / 400,000 | 3,072 MBps × 1 HA / Automatic |
 
 ---
 
@@ -424,8 +432,9 @@ VPC_ID=""          # Existing VPC ID
 SUBNET_ID=""       # Existing private subnet ID
 
 ENABLE_OPENZFS=1
-OPENZFS_SIZE_GIB=320
-OPENZFS_THROUGHPUT=2560
+OPENZFS_SIZE_GIB=32768
+OPENZFS_THROUGHPUT=10240
+OPENZFS_IOPS=400000
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -452,8 +461,9 @@ applies.
 | `REGION` | `ap-northeast-2` | AWS region |
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster name |
 | `ENABLE_OPENZFS` | `1` | Whether to create FSx OpenZFS |
-| `OPENZFS_SIZE_GIB` | `320` | OpenZFS capacity (64 – 524,288) |
-| `OPENZFS_THROUGHPUT` | `2560` | OpenZFS throughput (9 allowed values) |
+| `OPENZFS_SIZE_GIB` | `32768` | OpenZFS capacity (16,384 – 32,768; 16–32 TiB project range) |
+| `OPENZFS_THROUGHPUT` | `10240` | OpenZFS throughput (9 allowed values) |
+| `OPENZFS_IOPS` | `400000` | User-provisioned IOPS; at least 3 IOPS/GiB, at most the file-server tier and regional limit |
 | `ENABLE_ONTAP` | `0` | Whether to create FSx ONTAP |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP capacity (1,024 – 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | Throughput per HA pair (1536 / 3072 / 6144) |
@@ -481,7 +491,7 @@ VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy ./setup.sh
 
 # 4) Full env override (ONTAP 2 HA + license server)
 VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy \
-  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=5120 \
+  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=10240 OPENZFS_IOPS=400000 \
   ENABLE_ONTAP=1 ONTAP_HA_PAIRS=2 ONTAP_TPUT_PER_HA=6144 ONTAP_SIZE_GIB=20480 \
   ./setup.sh
 
@@ -496,7 +506,7 @@ flowchart TD
     A["Engineer connects via VPN"] --> B["sbatch on Login Node"]
     B --> C["Head Node / Slurm"]
     C --> D["Compute Node starts"]
-    D --> E["/fsxz/scratch workdir"]
+    D --> E["/local_scratch job workdir"]
     D --> F["/fsxz/work/results final artifacts"]
     D --> L["License Server: 27000/27020 checkout"]
     F --> G["Debug with Verdi on Login Node"]
@@ -509,7 +519,9 @@ flowchart TD
 - Execution happens on Compute Nodes
 - Analysis happens on the Login Node (Verdi / DCV)
 - Permanent storage is `/fsxz/work` (or `/fsxn/work/archive`)
-- Temporary data lives in `/fsxz/scratch`
+- PowerArtist and other high-I/O temporary data live in `/local_scratch/$SLURM_JOB_ID`
+- `/local_scratch` is Compute-node local NVMe and is deleted when the node terminates
+- `/fsxz/scratch` is shared staging space, not durable project storage
 - `/home` is not a project repository
 
 ---
@@ -518,7 +530,7 @@ flowchart TD
 
 | When | Symptom | Response |
 |---|---|---|
-| Compute bottleneck | `r8i` saturated / increase in small jobs | Add `c7i` queue, split queues |
+| Compute bottleneck | `x8aedz` saturated / increase in small jobs | Add `c7i` queue, split queues |
 | Login Node bottleneck | 2+ Verdi users at the same time, 64 GiB not enough | Split a Verdi-dedicated EC2, increase Login pool count |
 | Storage efficiency need | Storage cost grows, audit needed | Enable ONTAP (storage efficiency, per-file audit) |
 | License capacity | License manager throughput limit | Upsize instance type, triad redundancy |
@@ -533,8 +545,8 @@ data-transfer charges vary with usage and current Seoul Region pricing.
 
 | Cost class | Default resources |
 |---|---|
-| Always on | Head Node, Login Node, required License Server, FSx OpenZFS 320 GiB / 1,280 MBps, Interface VPC endpoints |
-| Usage based | `r8i.32xlarge` Compute Nodes (`MinCount=0`, `MaxCount=2`), backups, logs, and data transfer |
+| Always on | Head Node, Login Node, required License Server, FSx OpenZFS 32 TiB / 10,240 MBps / 400,000 IOPS, Interface VPC endpoints |
+| Usage based | `x8aedz.24xlarge` Compute Nodes (`MinCount=0`, `MaxCount=2`), backups, logs, and data transfer |
 | Optional | FSx for ONTAP and SSM Interface endpoints |
 
 Create the deployment estimate in [AWS Pricing Calculator](https://calculator.aws/)

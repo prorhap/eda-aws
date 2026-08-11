@@ -20,8 +20,9 @@ Context flags (cdk -c 또는 cdk.json):
   # Storage
   eda:enable_openzfs          bool (default: true)
   eda:enable_ontap            bool (default: false)
-  eda:openzfs_size_gib        int  (default: 10240)
-  eda:openzfs_throughput      int  (default: 2560 MBps)
+  eda:openzfs_size_gib        int  (default: 32768)
+  eda:openzfs_throughput      int  (default: 10240 MBps)
+  eda:openzfs_iops            int  (default: 400000)
   eda:ontap_size_gib          int  (default: 10240)
   eda:ontap_tput_per_ha       int  (default: 3072 MBps, valid: 1536|3072|6144)
   eda:ontap_ha_pairs          int  (default: 1, 1-12)

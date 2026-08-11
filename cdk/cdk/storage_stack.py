@@ -4,8 +4,9 @@ Deploys one or both FSx file systems based on context flags:
 
   eda:enable_openzfs       bool (default: True)
   eda:enable_ontap         bool (default: False)
-  eda:openzfs_size_gib     int  (default: 10240, 10 TiB)
-  eda:openzfs_throughput   int  (default: 2560 MBps)
+  eda:openzfs_size_gib     int  (default: 32768, 32 TiB)
+  eda:openzfs_throughput   int  (default: 10240 MBps)
+  eda:openzfs_iops         int  (default: 400000)
   eda:ontap_size_gib       int  (default: 10240, 10 TiB)
   eda:ontap_tput_per_ha    int  (default: 3072 MBps, valid: 1536|3072|6144)
   eda:ontap_ha_pairs       int  (default: 1, 1-12)
@@ -13,7 +14,8 @@ Deploys one or both FSx file systems based on context flags:
 ════════════════════════════════════════════════════════════════════════════════
 FSx for OpenZFS — SINGLE_AZ_HA_2 (highest-performance Single-AZ, NVMe L2ARC cache)
 ────────────────────────────────────────────────────────────────────────────────
-  StorageCapacity         64 GiB  ~  524,288 GiB (512 TiB)    (SSD provisioned)
+  Project capacity range  16,384 GiB (16 TiB) ~ 32,768 GiB (32 TiB)
+                          (within the AWS SSD range of 64 ~ 524,288 GiB)
   ThroughputCapacity      Valid values (MBps):
                             160, 320, 640, 1280, 2560, 3840, 5120, 7680, 10240
   NVMe L2ARC cache        40 GB ~ 2,560 GB (auto; 2.5 GB per 1 MBps throughput)
@@ -55,8 +57,15 @@ from cdk.naming import resource_prefix, ssm_path
 
 # ─── OpenZFS SINGLE_AZ_HA_2 validation tables ──────────────────────
 OPENZFS_THROUGHPUT_VALUES = (160, 320, 640, 1280, 2560, 3840, 5120, 7680, 10240)
-OPENZFS_MIN_GIB = 64
-OPENZFS_MAX_GIB = 524_288  # 512 TiB
+OPENZFS_MIN_GIB = 16_384  # 16 TiB project minimum
+OPENZFS_MAX_GIB = 32_768  # 32 TiB project maximum
+OPENZFS_DEFAULT_SIZE_GIB = 32_768  # 32 TiB
+OPENZFS_DEFAULT_THROUGHPUT = 10_240
+OPENZFS_DEFAULT_IOPS = 400_000
+OPENZFS_MIN_IOPS_PER_GIB = 3
+OPENZFS_IOPS_PER_MBPS = 40
+# ap-northeast-2 allows a maximum of 50 provisioned IOPS per GiB.
+OPENZFS_SEOUL_MAX_IOPS_PER_GIB = 50
 
 # ─── ONTAP SINGLE_AZ_2 validation tables ───────────────────────────
 ONTAP_TPUT_PER_HA_VALUES = (1536, 3072, 6144)
@@ -135,19 +144,43 @@ class StorageStack(Stack):
         #  FSx for OpenZFS — SINGLE_AZ_HA_2
         # ══════════════════════════════════════════════════════
         if enable_openzfs:
-            oz_size = _ctx_int("eda:openzfs_size_gib", 10_240)
-            oz_tput = _ctx_int("eda:openzfs_throughput", 2_560)
+            oz_size = _ctx_int("eda:openzfs_size_gib", OPENZFS_DEFAULT_SIZE_GIB)
+            oz_tput = _ctx_int(
+                "eda:openzfs_throughput", OPENZFS_DEFAULT_THROUGHPUT
+            )
+            oz_iops = _ctx_int("eda:openzfs_iops", OPENZFS_DEFAULT_IOPS)
 
             if not (OPENZFS_MIN_GIB <= oz_size <= OPENZFS_MAX_GIB):
                 raise ValueError(
                     f"eda:openzfs_size_gib={oz_size} must be between "
-                    f"{OPENZFS_MIN_GIB} and {OPENZFS_MAX_GIB}"
+                    f"{OPENZFS_MIN_GIB} and {OPENZFS_MAX_GIB} GiB "
+                    "(16-32 TiB project range)"
                 )
             if oz_tput not in OPENZFS_THROUGHPUT_VALUES:
                 raise ValueError(
                     f"eda:openzfs_throughput={oz_tput} must be one of "
                     f"{OPENZFS_THROUGHPUT_VALUES}"
                 )
+            min_iops = oz_size * OPENZFS_MIN_IOPS_PER_GIB
+            if oz_iops < min_iops:
+                raise ValueError(
+                    f"eda:openzfs_iops={oz_iops} must be at least "
+                    f"{min_iops} (3 IOPS/GiB for {oz_size} GiB)"
+                )
+            throughput_max_iops = oz_tput * OPENZFS_IOPS_PER_MBPS
+            if oz_iops > throughput_max_iops:
+                raise ValueError(
+                    f"eda:openzfs_iops={oz_iops} exceeds the {oz_tput} MBps "
+                    f"tier maximum of {throughput_max_iops} IOPS"
+                )
+            if self.region == "ap-northeast-2":
+                seoul_capacity_max_iops = oz_size * OPENZFS_SEOUL_MAX_IOPS_PER_GIB
+                if oz_iops > seoul_capacity_max_iops:
+                    raise ValueError(
+                        f"eda:openzfs_iops={oz_iops} exceeds the Seoul regional "
+                        f"limit of {OPENZFS_SEOUL_MAX_IOPS_PER_GIB} IOPS/GiB "
+                        f"for {oz_size} GiB ({seoul_capacity_max_iops} IOPS)"
+                    )
 
             oz_key = kms.Key(
                 self, "OpenZfsKey",
@@ -170,7 +203,8 @@ class StorageStack(Stack):
                     throughput_capacity=oz_tput,
                     automatic_backup_retention_days=7,
                     disk_iops_configuration=fsx.CfnFileSystem.DiskIopsConfigurationProperty(
-                        mode="AUTOMATIC",
+                        mode="USER_PROVISIONED",
+                        iops=oz_iops,
                     ),
                     options=["DELETE_CHILD_VOLUMES_AND_SNAPSHOTS"],
                 ),

@@ -1,6 +1,6 @@
 # ParallelCluster Configuration — Day 1 (v3.0)
 #
-# r8i.32xlarge × 2, single queue, LoginNodes Count=1
+# x8aedz.24xlarge × 2, single queue, LoginNodes Count=1
 #
 # setup.sh substitutes placeholders and activates/strips
 # #OPENZFS_BEGIN/#OPENZFS_END and #ONTAP_BEGIN/#ONTAP_END blocks based on config flags.
@@ -44,7 +44,7 @@ LoginNodes:
   Pools:
     - Name: users
       Count: 1
-      InstanceType: r7i.2xlarge
+      InstanceType: ${LOGIN_NODE_INSTANCE_TYPE}
       Networking:
         SubnetIds:
           - ${BASE.PrimarySubnetId}
@@ -120,7 +120,7 @@ Scheduling:
       UseEc2Hostnames: true
 
   SlurmQueues:
-    - Name: eda-r8i
+    - Name: eda-x8aedz
       CapacityType: ONDEMAND
       JobExclusiveAllocation: false
       Networking:
@@ -135,9 +135,11 @@ Scheduling:
             Size: 200
             Iops: 3000
             Throughput: 125
+          EphemeralVolume:
+            MountDir: /local_scratch
       ComputeResources:
-        - Name: r128
-          InstanceType: r8i.32xlarge
+        - Name: x8aedz24
+          InstanceType: x8aedz.24xlarge
           MinCount: 0
           MaxCount: 2
           DisableSimultaneousMultithreading: false

@@ -18,8 +18,8 @@ Running `setup.sh` produces the following environment end-to-end:
 | Node | Instance type | Count | Role |
 |---|---|---|---|
 | Head Node | `m7i.xlarge` | 1 (always on) | Slurm controller, job scheduler |
-| Login Node | `r7i.2xlarge` | 1 (pool) | User entry point — job submission, file access |
-| Compute Node | `r8i.32xlarge` | 0–2 (auto scale) | Simulation / regression workload |
+| Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 (pool) | `r7i.2xlarge` normally; `g6.4xlarge` with DCV |
+| Compute Node | `x8aedz.24xlarge` | 0–2 (auto scale) | PowerArtist scratch, simulation / regression workload |
 
 For a first-time user, the model is simple: **start work on the Login Node and
 run the actual EDA workload on a Compute Node**. The Head Node manages the
@@ -36,22 +36,24 @@ relationship between them.
   but general users should neither use it as a workspace nor run EDA jobs on it.
 - **Compute Node**: The worker node on which Slurm runs submitted jobs.
   `MinCount: 0` starts it on demand, and it terminates after 15 idle minutes
-  (`ScaledownIdletime: 15`). Local disk data is not preserved after
-  termination, so put inputs and results in `/fsxz/work` or `/fsxz/scratch`.
-  Users normally do not SSH to these nodes; work runs inside a Slurm job script.
+  (`ScaledownIdletime: 15`). Each `x8aedz.24xlarge` has 96 vCPU, 3 TiB
+  memory, and 7.6 TB of local NVMe mounted at `/local_scratch`. It is
+  ephemeral: use it for high-I/O work directories, then copy required results
+  to `/fsxz/work` before the job ends. Users normally do not SSH to these
+  nodes; work runs inside a Slurm job script.
 
 **Typical user flow**
 
 1. An engineer SSHs to the Login Node through the VPN.
 2. They prepare source and a job script under `/fsxz/work`.
 3. They submit the job from the Login Node with `sbatch`.
-4. Slurm on the Head Node starts a Compute Node in the `eda-r8i` partition and
+4. Slurm on the Head Node starts a Compute Node in the `eda-x8aedz` partition and
    runs the job.
 5. The engineer uses the Login Node to check `squeue` and review job output.
 
 In Slurm, a **job** is an execution request with its CPU, memory, and runtime
 requirements. A **partition** is a group of Compute Nodes that can run the
-job. This project's default partition is `eda-r8i`.
+job. This project's default partition is `eda-x8aedz`.
 
 ```bash
 # Run on the Login Node
@@ -72,18 +74,20 @@ squeue -u "$USER"             # Check your job status
 |---|---|---|
 | `/fsxz/tools` | FSx OpenZFS | EDA tools, shared executables |
 | `/fsxz/work` | FSx OpenZFS | RTL source, project files, simulation results |
-| `/fsxz/scratch` | FSx OpenZFS | Per-job temporary workspace (`$USER/$SLURM_JOB_ID`) |
+| `/fsxz/scratch` | FSx OpenZFS | Shared staging and non-local temporary data |
+| `/local_scratch` | Compute-node local NVMe | High-I/O job workdir (`$SLURM_JOB_ID`); not shared and deleted when the node terminates |
 
-All three are NFS-mounted on Head, Login, and Compute nodes at boot via the
+The three `/fsxz/*` paths are NFS-mounted on Head, Login, and Compute nodes at boot via the
 `SharedStorage` section in `pcluster-config.yaml`. Files written on any node
-are immediately visible on all others.
+are immediately visible on all others. `/local_scratch` is mounted only on
+Compute Nodes by ParallelCluster's `EphemeralVolume` setting.
 
 ### 1.3 Slurm configuration
 
 | Setting | Value | Effect |
 |---|---|---|
 | Scheduler | Slurm | — |
-| Queue name | `eda-r8i` | Used in `#SBATCH --partition=eda-r8i` |
+| Queue name | `eda-x8aedz` | Used in `#SBATCH --partition=eda-x8aedz` |
 | Capacity type | On-Demand | No spot interruption |
 | Memory-based scheduling | Enabled (`CR_Core_Memory`) | `--mem` in job scripts is enforced |
 | Idle scale-down | 15 min | Compute nodes terminate after 15 min idle |
@@ -95,6 +99,8 @@ are immediately visible on all others.
 - **OS**: RHEL 8 (`rhel8`)
 - **Head Node root volume**: 500 GiB gp3, 6000 IOPS, 250 MB/s
 - **Compute Node root volume**: 200 GiB gp3, 3000 IOPS, 125 MB/s
+- **Compute local scratch**: `/local_scratch` on the `x8aedz.24xlarge` local
+  NVMe SSDs. It is erased when the Compute Node terminates.
 - **FSx OpenZFS encryption**: KMS-encrypted at rest (`OpenZfsKey` in `EdaStorage` stack)
 
 ### 1.5 Monitoring
@@ -154,7 +160,8 @@ HeadNode:
 LoginNodes:
   Pools:
     - Count: 1                      # number of concurrent login nodes
-      InstanceType: r7i.2xlarge     # resize for heavier interactive work
+      InstanceType: ${LOGIN_NODE_INSTANCE_TYPE}
+      # r7i.2xlarge normally; g6.4xlarge when ENABLE_DCV=1
 
 SharedStorage:
   - MountDir: /fsxz/tools           # mount path on all nodes
@@ -166,9 +173,13 @@ Scheduling:
     ScaledownIdletime: 15           # minutes before idle compute terminates
     EnableMemoryBasedScheduling: true
   SlurmQueues:
-    - Name: eda-r8i
+    - Name: eda-x8aedz
+      ComputeSettings:
+        LocalStorage:
+          EphemeralVolume:
+            MountDir: /local_scratch
       ComputeResources:
-        - InstanceType: r8i.32xlarge
+        - InstanceType: x8aedz.24xlarge
           MaxCount: 2               # maximum concurrent compute nodes
 ```
 
@@ -200,8 +211,8 @@ In `pcluster-config-template.yaml`, under `SlurmQueues[0].ComputeResources`:
 
 ```yaml
 ComputeResources:
-  - Name: r128
-    InstanceType: r8i.32xlarge   # change instance type
+  - Name: x8aedz24
+    InstanceType: x8aedz.24xlarge   # change instance type
     MinCount: 0
     MaxCount: 2                  # change max concurrent nodes
 ```
@@ -215,7 +226,7 @@ for large regression runs):
 
 ```yaml
 SlurmQueues:
-  - Name: eda-r8i
+  - Name: eda-x8aedz
     # ... existing queue ...
   - Name: eda-mem
     CapacityType: ONDEMAND
@@ -238,8 +249,9 @@ FSx resources are managed by CDK, not pcluster. Change the values in
 
 ```bash
 # Edit config/default.env:
-#   OPENZFS_SIZE_GIB=640
-#   OPENZFS_THROUGHPUT=2560
+#   OPENZFS_SIZE_GIB=32768
+#   OPENZFS_THROUGHPUT=10240
+#   OPENZFS_IOPS=400000
 
 SKIP_CLUSTER=1 ./setup.sh
 ```
@@ -618,7 +630,7 @@ in order.
 ```bash
 # Partition / node status
 sinfo
-# Expect: eda-r8i partition in idle~ state (compute nodes not yet up)
+# Expect: eda-x8aedz partition in idle~ state (compute nodes not yet up)
 
 # Detailed info
 scontrol show partition
@@ -659,7 +671,7 @@ mkdir -p "$TEST_DIR"
 cat > "$TEST_DIR/test_job.sh" << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=cluster-test
-#SBATCH --partition=eda-r8i
+#SBATCH --partition=eda-x8aedz
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=00:10:00
@@ -672,11 +684,11 @@ echo "Node: $(hostname)"
 echo "CPUs: $SLURM_CPUS_PER_TASK"
 echo "Memory: ${SLURM_MEM_PER_NODE:-N/A} MB"
 
-for mount_dir in /fsxz/tools /fsxz/work /fsxz/scratch; do
+for mount_dir in /fsxz/tools /fsxz/work /fsxz/scratch /local_scratch; do
   findmnt -T "$mount_dir" >/dev/null
 done
 
-probe="/fsxz/scratch/$USER/.cluster-test-${SLURM_JOB_ID}"
+probe="/local_scratch/.cluster-test-${SLURM_JOB_ID}"
 printf 'cluster validation\n' > "$probe"
 test "$(cat "$probe")" = "cluster validation"
 rm -f "$probe"
@@ -741,13 +753,15 @@ have `ssh` and `rsync` installed.
 cat > /fsxz/scratch/$USER/run_vcs.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=vcs_smoke
-#SBATCH --partition=eda-r8i
+#SBATCH --partition=eda-x8aedz
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
 
-WORKDIR=/fsxz/scratch/$USER/$SLURM_JOB_ID
-mkdir -p $WORKDIR && cd $WORKDIR
+WORKDIR=/local_scratch/$SLURM_JOB_ID
+mkdir -p "$WORKDIR"
+trap 'rm -rf "$WORKDIR"' EXIT
+cd "$WORKDIR"
 
 # Tool setup
 source /fsxz/tools/eda/env/vcs_setup.sh
@@ -841,7 +855,13 @@ pcluster get-cluster-log-events --cluster-name $CLUSTER_NAME \
 sudo tail -f /var/log/parallelcluster/clustermgtd.log
 sudo tail -f /var/log/parallelcluster/slurm_resume.log
 
-# Check EC2 instance limits
+# Check the distinct X-family On-Demand vCPU quota.
+# Two Compute Nodes require 192 vCPUs at maximum.
+aws service-quotas get-service-quota \
+  --service-code ec2 \
+  --quota-code L-7295265B
+
+# DCV uses g6.4xlarge (16 vCPUs) and the account's F-instance quota.
 aws service-quotas get-service-quota \
   --service-code ec2 \
   --quota-code L-74FC7D96

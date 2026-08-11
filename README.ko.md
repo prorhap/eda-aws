@@ -55,7 +55,8 @@ aws configure set region ap-northeast-2
 `ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
 `ec2:DescribeSecurityGroups`, `ec2:DescribeInstanceTypeOfferings`,
 `ec2:DescribeVpcAttribute`, `cloudformation:ListStacks`,
-`cloudformation:ListStackResources`가 필요합니다.
+`cloudformation:ListStackResources`, `servicequotas:GetServiceQuota`가
+필요합니다.
 
 ### 2.2 필수 도구 설치
 
@@ -173,18 +174,22 @@ setup.sh 단계:
 | `REGION` | `ap-northeast-2` | 배포 리전 |
 | `STACK_PREFIX` | `Eda` | CDK 스택·물리 리소스·SSM 경로 접두사 |
 | `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `2560` | FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `10240` / `400000` | 최대 성능 기준 FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 필수 EDA 라이센스 서버 인스턴스 |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` 기본값 |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장) |
-| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | Login Node DCV 활성화 및 접속 허용망 |
+| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | DCV 활성화, `g6.4xlarge` Login Node 선택 및 접속 허용망 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
 | `ENABLE_SSM` | `0` | Session Manager 접속 허용 |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | 단계 건너뛰기 |
 
 FSx OpenZFS 자식 볼륨(tools/work/scratch)의 quota/reservation은 부모 용량에 비례해
 자동 스케일링됩니다(부모 용량보다 큰 quota 지정 불가 제약을 회피).
+
+기본 OpenZFS throughput과 IOPS는 서울 리전의 기본 quota를 모두 사용합니다.
+`setup.sh`가 설정된 quota 값은 사전 확인하며, 같은 리전에 다른 OpenZFS 파일
+시스템을 추가하려면 먼저 quota 증설을 요청해야 합니다.
 
 ---
 
@@ -220,7 +225,8 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 
 별도 DCV EC2 스택 없이 ParallelCluster가 Login Node에 설치하는 DCV를 사용합니다.
 격리망에서 외부 패키지를 다운로드하지 않으며, 라이선스 확인은 기존 S3 Gateway
-Endpoint를 사용합니다.
+Endpoint를 사용합니다. DCV를 활성화하면 `setup.sh`가 NVIDIA L4 GPU 1개가 있는
+`g6.4xlarge` Login Node를 선택하고, 비활성화하면 `r7i.2xlarge`를 사용합니다.
 
 ```bash
 ENABLE_DCV=1 DCV_ALLOWED_IPS=172.16.4.0/24 \
