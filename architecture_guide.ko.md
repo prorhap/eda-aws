@@ -39,10 +39,10 @@ flowchart LR
 
         subgraph VPC["기존 VPC (import)"]
             subgraph PRIVATE["기존 Private Subnet"]
-                LOGIN["Login Node<br/>r7i.2xlarge<br/>SSH + Verdi + DCV"]
+                LOGIN["Login Node<br/>r7i.2xlarge 또는 g6.4xlarge<br/>SSH + Verdi + DCV"]
                 HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld"]
-                C1["Compute<br/>r8i.32xlarge"]
-                C2["Compute<br/>r8i.32xlarge"]
+                C1["Compute<br/>x8aedz.24xlarge<br/>로컬 NVMe 7.6 TB"]
+                C2["Compute<br/>x8aedz.24xlarge<br/>로컬 NVMe 7.6 TB"]
 
                 subgraph ZFS["FSx for OpenZFS (기본)<br/>SINGLE_AZ_HA_2"]
                     ZT["/fsxz/tools"]
@@ -82,10 +82,12 @@ flowchart LR
 | 역할 | 인스턴스 | 수량 | 용도 |
 |---|---|---:|---|
 | Head Node | `m7i.xlarge` | 1 | Slurm controller |
-| Login Node | `r7i.2xlarge` | 1 | SSH, Verdi GUI, Amazon DCV |
-| Compute | `r8i.32xlarge` | 0~2 | VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
+| Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 | 기본 `r7i.2xlarge`; DCV 활성화 시 `g6.4xlarge` |
+| Compute | `x8aedz.24xlarge` | 0~2 | PowerArtist scratch, VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
 
-총 용량: Compute 2대 기준 256 vCPU / 2 TiB memory. [R15][R16][R17]
+총 용량: Compute 2대 기준 192 vCPU / 6 TiB memory / 로컬 NVMe 15.2 TB입니다.
+설치 전 사전검사가 선택한 단일 subnet의 AZ에서 인스턴스 제공 여부를 확인합니다.
+현재 서울 리전 제공 여부는 `ap-northeast-2a`에서 확인했습니다. [R15][R16][R17]
 
 ---
 
@@ -98,21 +100,26 @@ Day 1 기본 스토리지로 가장 단순하고 빠른 구성입니다.
 | 항목 | 값 |
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (2세대, NVMe L2ARC 캐시) |
-| Storage capacity | 320 GiB (범위: 64 GiB ~ 512 TiB) |
-| Throughput | 2,560 MBps (허용값: 160 / 320 / 640 / 1280 / 2560 / 3840 / 5120 / 7680 / 10240) |
-| SSD IOPS | Automatic (3 IOPS/GiB) |
+| Storage capacity | 32 TiB / 32,768 GiB (프로젝트 범위: 16~32 TiB) |
+| Throughput | 10,240 MBps (최대 tier) |
+| SSD IOPS | 400,000, `USER_PROVISIONED` (해당 tier 최대) |
+| File server cache | 메모리 512 GiB, NVMe L2ARC 2,560 GiB |
 | Backup retention | 7 days |
 
 **볼륨 구성**
 
 | 볼륨 | Mount | Quota | Reservation | 압축 | 성격 |
 |---|---|---:|---:|---|---|
-| `fsxz_tools` | `/fsxz/tools` | 64 GiB | 16 GiB | ZSTD | EDA 툴 설치본·wrapper·env |
-| `fsxz_work` | `/fsxz/work` | 128 GiB | 64 GiB | ZSTD | RTL·TB·results·coverage |
-| `fsxz_scratch` | `/fsxz/scratch` | 128 GiB | 0 (thin) | LZ4 | job workdir |
+| `fsxz_tools` | `/fsxz/tools` | 3,276 GiB | 655 GiB | ZSTD | EDA 툴 설치본·wrapper·env |
+| `fsxz_work` | `/fsxz/work` | 13,107 GiB | 6,553 GiB | ZSTD | RTL·TB·results·coverage |
+| `fsxz_scratch` | `/fsxz/scratch` | 13,107 GiB | 0 (thin) | LZ4 | 공유 job staging / 비로컬 임시 데이터 |
 
 Quota와 reservation은 설정한 부모 용량에 따라 자동 계산됩니다. 위 값은 프로젝트
-기본값인 320 GiB에서 생성되는 레이아웃입니다.
+기본값인 32 TiB에서 생성되는 레이아웃입니다.
+
+10,240 MBps / 400,000 IOPS는 서울 리전의 기본 계정 OpenZFS throughput 및 disk
+IOPS quota를 모두 사용합니다. 의도적으로 최대 성능을 기준으로 한 값이므로, quota
+증설 전에는 같은 리전에 다른 OpenZFS 파일 시스템을 만들면 안 됩니다. [R1S-1][R1S-2]
 
 ### 4.2 FSx for NetApp ONTAP (옵션)
 
@@ -270,8 +277,8 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 
 | 항목 | 값 |
 |---|---|
-| Queue 수 | 1 (`eda-r8i`) |
-| Compute resource | `r8i.32xlarge`, `MinCount=0`, `MaxCount=2` |
+| Queue 수 | 1 (`eda-x8aedz`) |
+| Compute resource | `x8aedz.24xlarge`, `MinCount=0`, `MaxCount=2` |
 | `EnableMemoryBasedScheduling` | `true` |
 | `JobExclusiveAllocation` | `false` (작은 job 다수에 유리) |
 | `ScaledownIdletime` | 15분 |
@@ -371,8 +378,8 @@ ParallelCluster 기본 동작(Head Node `/home` 공유)을 그대로 사용합�
 | 역할 | 인스턴스 | 수량 |
 |---|---|---:|
 | Head Node | `m7i.xlarge` | 1 |
-| Login Node | `r7i.2xlarge` | 1 |
-| Compute | `r8i.32xlarge` | 0~2 |
+| Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 |
+| Compute | `x8aedz.24xlarge` | 0~2 |
 | License Server (필수) | `m7i.large` | 1 |
 
 ### 스토리지
@@ -380,8 +387,8 @@ ParallelCluster 기본 동작(Head Node `/home` 공유)을 그대로 사용합�
 | 항목 | OpenZFS (기본) | ONTAP (옵션) |
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
-| Capacity | 320 GiB | 10 TiB |
-| Throughput | 2,560 MBps | 3,072 MBps × 1 HA |
+| Capacity | 32 TiB | 10 TiB |
+| Throughput / IOPS | 10,240 MBps / 400,000 | 3,072 MBps × 1 HA / Automatic |
 
 ---
 
@@ -407,8 +414,9 @@ VPC_ID=""          # 기존 VPC ID
 SUBNET_ID=""       # 기존 private subnet ID
 
 ENABLE_OPENZFS=1
-OPENZFS_SIZE_GIB=320
-OPENZFS_THROUGHPUT=2560
+OPENZFS_SIZE_GIB=32768
+OPENZFS_THROUGHPUT=10240
+OPENZFS_IOPS=400000
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -434,8 +442,9 @@ ENABLE_VPC_ENDPOINTS=1
 | `REGION` | `ap-northeast-2` | AWS 리전 |
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster 이름 |
 | `ENABLE_OPENZFS` | `1` | FSx OpenZFS 생성 여부 |
-| `OPENZFS_SIZE_GIB` | `320` | OpenZFS 용량 (64 ~ 524,288) |
-| `OPENZFS_THROUGHPUT` | `2560` | OpenZFS throughput (9개 허용값) |
+| `OPENZFS_SIZE_GIB` | `32768` | OpenZFS 용량 (프로젝트 범위: 16,384 ~ 32,768 / 16~32 TiB) |
+| `OPENZFS_THROUGHPUT` | `10240` | OpenZFS throughput (9개 허용값) |
+| `OPENZFS_IOPS` | `400000` | 사용자 지정 IOPS. 최소 3 IOPS/GiB, 파일 서버 tier 및 리전 한도 이하 |
 | `ENABLE_ONTAP` | `0` | FSx ONTAP 생성 여부 |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP 용량 (1,024 ~ 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | HA pair당 throughput (1536 / 3072 / 6144) |
@@ -463,7 +472,7 @@ VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy ./setup.sh
 
 # 4) 풀 구성 env override (ONTAP 2 HA + license server)
 VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy \
-  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=5120 \
+  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=10240 OPENZFS_IOPS=400000 \
   ENABLE_ONTAP=1 ONTAP_HA_PAIRS=2 ONTAP_TPUT_PER_HA=6144 ONTAP_SIZE_GIB=20480 \
   ./setup.sh
 
@@ -478,7 +487,7 @@ flowchart TD
     A["엔지니어 VPN 접속"] --> B["Login Node에서 sbatch"]
     B --> C["Head Node / Slurm"]
     C --> D["Compute Node 기동"]
-    D --> E["/fsxz/scratch workdir"]
+    D --> E["/local_scratch job 작업 경로"]
     D --> F["/fsxz/work/results 최종 산출물"]
     D --> L["License Server: 27000/27020 checkout"]
     F --> G["Login Node에서 Verdi debug"]
@@ -491,7 +500,9 @@ flowchart TD
 - 실행은 Compute Node
 - 분석은 Login Node (Verdi / DCV)
 - 영구 보관은 `/fsxz/work` (또는 `/fsxn/work/archive`)
-- 임시 데이터는 `/fsxz/scratch`
+- PowerArtist 등 높은 I/O 임시 데이터는 `/local_scratch/$SLURM_JOB_ID`
+- `/local_scratch`는 Compute Node 로컬 NVMe이며 노드 종료 시 삭제됨
+- `/fsxz/scratch`는 공유 staging 공간이며 영구 프로젝트 저장소가 아님
 - `/home` 은 프로젝트 저장소가 아님
 
 ---
@@ -500,7 +511,7 @@ flowchart TD
 
 | 시기 | 증상 | 대응 |
 |---|---|---|
-| Compute 병목 | `r8i` 활용률 포화 / 작은 job 증가 | `c7i` queue 추가, queue 분리 |
+| Compute 병목 | `x8aedz` 활용률 포화 / 작은 job 증가 | `c7i` queue 추가, queue 분리 |
 | Login Node 병목 | Verdi 동시 사용자 2명 이상, 64 GiB 부족 | Verdi 전용 EC2 분리, Login pool count 증가 |
 | Storage efficiency 요구 | 저장 비용 증가, audit 필요 | ONTAP 활성화 (storage efficiency, 파일 단위 감사) |
 | License 용량 | 라이선스 매니저 throughput 한계 | instance type 승격, triad redundancy |
@@ -515,8 +526,8 @@ flowchart TD
 
 | 비용 구분 | 기본 리소스 |
 |---|---|
-| 상시 실행 | Head Node, Login Node, 필수 License Server, FSx OpenZFS 320 GiB / 1,280 MBps, Interface VPC Endpoint |
-| 사용량 기반 | `r8i.32xlarge` Compute Node(`MinCount=0`, `MaxCount=2`), 백업, 로그, 데이터 전송 |
+| 상시 실행 | Head Node, Login Node, 필수 License Server, FSx OpenZFS 32 TiB / 10,240 MBps / 400,000 IOPS, Interface VPC Endpoint |
+| 사용량 기반 | `x8aedz.24xlarge` Compute Node(`MinCount=0`, `MaxCount=2`), 백업, 로그, 데이터 전송 |
 | 선택 | FSx for ONTAP, SSM Interface Endpoint |
 
 승인 직전에 [AWS Pricing Calculator](https://calculator.aws/)에서

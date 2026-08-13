@@ -44,7 +44,6 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
         context={
             "eda:enable_openzfs": True,
             "eda:enable_ontap": False,
-            "eda:openzfs_size_gib": 320,
         }
     )
     vpc, subnet, _, fsx_sg, ontap_sg = imported_network(app)
@@ -63,22 +62,109 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
         "AWS::FSx::FileSystem",
         {
             "FileSystemType": "OPENZFS",
-            "StorageCapacity": 320,
+            "StorageCapacity": 32768,
             "OpenZFSConfiguration": {
                 "DeploymentType": "SINGLE_AZ_HA_2",
-                "ThroughputCapacity": 2560,
+                "ThroughputCapacity": 10240,
+                "DiskIopsConfiguration": {
+                    "Mode": "USER_PROVISIONED",
+                    "Iops": 400000,
+                },
             },
         },
     )
     volumes = template.find_resources("AWS::FSx::Volume")
     assert len(volumes) == 3
     assert all(
-        resource["Properties"]["OpenZFSConfiguration"][
-            "StorageCapacityQuotaGiB"
-        ]
-        <= 320
+        resource["Properties"]["OpenZFSConfiguration"]["StorageCapacityQuotaGiB"]
+        <= 32768
         for resource in volumes.values()
     )
+    template.has_output(
+        "OpenZfsDns",
+        {
+            "Export": {"Name": "eda:storage:OpenZfsDns"},
+        },
+    )
+
+
+def test_storage_stack_accepts_16_tib_openzfs_profile():
+    app = cdk.App(
+        context={
+            "eda:enable_openzfs": True,
+            "eda:enable_ontap": False,
+            "eda:openzfs_size_gib": 16_384,
+            "eda:openzfs_throughput": 5_120,
+            "eda:openzfs_iops": 200_000,
+        }
+    )
+    vpc, subnet, _, fsx_sg, ontap_sg = imported_network(app)
+    stack = StorageStack(
+        app,
+        "EdaStorage",
+        vpc=vpc,
+        sg_fsx=fsx_sg,
+        sg_ontap=ontap_sg,
+        primary_subnet=subnet,
+        env=ENV,
+    )
+    template = assertions.Template.from_stack(stack)
+
+    template.has_resource_properties(
+        "AWS::FSx::FileSystem",
+        {
+            "FileSystemType": "OPENZFS",
+            "StorageCapacity": 16_384,
+            "OpenZFSConfiguration": {
+                "ThroughputCapacity": 5_120,
+                "DiskIopsConfiguration": {
+                    "Mode": "USER_PROVISIONED",
+                    "Iops": 200_000,
+                },
+            },
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "match"),
+    [
+        (
+            {
+                "eda:enable_openzfs": True,
+                "eda:enable_ontap": False,
+                "eda:openzfs_size_gib": 16_384,
+                "eda:openzfs_throughput": 2560,
+                "eda:openzfs_iops": 49_151,
+            },
+            "at least 49152",
+        ),
+        (
+            {
+                "eda:enable_openzfs": True,
+                "eda:enable_ontap": False,
+                "eda:openzfs_size_gib": 16_384,
+                "eda:openzfs_throughput": 2560,
+                "eda:openzfs_iops": 102_401,
+            },
+            "tier maximum of 102400",
+        ),
+    ],
+)
+def test_openzfs_iops_validation(context, match):
+    app = cdk.App(context=context)
+    vpc, subnet, _, fsx_sg, ontap_sg = imported_network(app)
+
+    with pytest.raises(ValueError, match=match):
+        StorageStack(
+            app,
+            "EdaStorage",
+            vpc=vpc,
+            sg_fsx=fsx_sg,
+            sg_ontap=ontap_sg,
+            primary_subnet=subnet,
+            env=ENV,
+        )
 
 
 def test_storage_resources_are_scoped_by_stack_prefix():
@@ -133,6 +219,11 @@ def test_ontap_secret_uses_generated_name_for_reinstall():
     secrets = template.find_resources("AWS::SecretsManager::Secret")
     assert len(secrets) == 1
     assert "Name" not in next(iter(secrets.values()))["Properties"]
+    template.has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/eda/storage/OntapSvmNfsDns"},
+    )
+    template.resource_count_is("Custom::AWS", 1)
 
 
 def test_license_server_uses_private_static_network_interface(monkeypatch):
@@ -182,7 +273,7 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
                         "Ref": assertions.Match.any_value(),
                     },
                 }
-            ]
+            ],
         },
     )
 
@@ -199,9 +290,7 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
         )
 
     allowed_description_chars = set(
-        string.ascii_letters
-        + string.digits
-        + ". _-:/()#,@[]+=&;{}!$*"
+        string.ascii_letters + string.digits + ". _-:/()#,@[]+=&;{}!$*"
     )
     assert ingress_descriptions
     assert all(

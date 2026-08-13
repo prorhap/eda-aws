@@ -41,7 +41,7 @@ from aws_cdk import (
     CfnOutput,
 )
 from constructs import Construct
-from cdk.naming import resource_prefix, ssm_path
+from cdk.naming import foundation_export_name, resource_prefix, ssm_path
 
 
 # ParallelCluster가 private subnet에서 동작하기 위해 필요한 VPC Endpoint
@@ -52,7 +52,6 @@ INTERFACE_SSM = ["ssm", "ssmmessages", "ec2messages"]
 
 
 class BaseStack(Stack):
-
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -85,7 +84,8 @@ class BaseStack(Stack):
         self.vpc = ec2.Vpc.from_lookup(self, "EdaVpc", vpc_id=vpc_id)
 
         self.primary_subnet = ec2.Subnet.from_subnet_attributes(
-            self, "EdaPrimarySubnet",
+            self,
+            "EdaPrimarySubnet",
             subnet_id=subnet_id,
             availability_zone=subnet_az,
             route_table_id=self.primary_route_table_id,
@@ -94,7 +94,8 @@ class BaseStack(Stack):
         # ── Security Groups ──────────────────────────────────
         # 클러스터 노드 (head, login, compute)
         self.sg_cluster_nodes = ec2.SecurityGroup(
-            self, "SgClusterNodes",
+            self,
+            "SgClusterNodes",
             vpc=self.vpc,
             description="ParallelCluster nodes - FSx client access",
             allow_all_outbound=True,
@@ -103,7 +104,8 @@ class BaseStack(Stack):
         # FSx for OpenZFS 파일시스템용 SG
         # Ports: 111 (rpcbind), 2049 (NFS), 20001-20003 (mount/NLM/status)
         self.sg_fsx = ec2.SecurityGroup(
-            self, "SgFsx",
+            self,
+            "SgFsx",
             vpc=self.vpc,
             description="FSx for OpenZFS file system",
             allow_all_outbound=True,
@@ -130,7 +132,8 @@ class BaseStack(Stack):
         #   TCP 3260 (iSCSI), 4420/4421 (NVMe/TCP — 6개 이하 HA pair만)
         #   TCP 443 (ONTAP REST/HTTPS), 22 (SSH management)
         self.sg_ontap = ec2.SecurityGroup(
-            self, "SgOntap",
+            self,
+            "SgOntap",
             vpc=self.vpc,
             description="FSx for NetApp ONTAP file system",
             allow_all_outbound=True,
@@ -155,42 +158,49 @@ class BaseStack(Stack):
             or f"{prefix}-cluster-key-{Stack.of(self).account}"
         )
         self.key_pair = ec2.KeyPair(
-            self, "EdaKeyPair",
+            self,
+            "EdaKeyPair",
             key_pair_name=key_pair_name,
             type=ec2.KeyPairType.RSA,
         )
 
         # ── CloudTrail ───────────────────────────────────────
         trail_key = kms.Key(
-            self, "TrailKey",
+            self,
+            "TrailKey",
             alias=f"{prefix}/cloudtrail",
             description="Encryption key for EDA CloudTrail logs",
             enable_key_rotation=True,
             removal_policy=RemovalPolicy.RETAIN,
         )
-        trail_key.add_to_resource_policy(iam.PolicyStatement(
-            sid="AllowCloudTrailEncrypt",
-            actions=["kms:GenerateDataKey*"],
-            principals=[iam.ServicePrincipal("cloudtrail.amazonaws.com")],
-            resources=["*"],
-            conditions={
-                "StringEquals": {
-                    "AWS:SourceArn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/{prefix}-trail",
+        trail_key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="AllowCloudTrailEncrypt",
+                actions=["kms:GenerateDataKey*"],
+                principals=[iam.ServicePrincipal("cloudtrail.amazonaws.com")],
+                resources=["*"],
+                conditions={
+                    "StringEquals": {
+                        "AWS:SourceArn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/{prefix}-trail",
+                    },
+                    "StringLike": {
+                        "kms:EncryptionContext:aws:cloudtrail:arn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/*",
+                    },
                 },
-                "StringLike": {
-                    "kms:EncryptionContext:aws:cloudtrail:arn": f"arn:aws:cloudtrail:{Stack.of(self).region}:{Stack.of(self).account}:trail/*",
-                },
-            },
-        ))
-        trail_key.add_to_resource_policy(iam.PolicyStatement(
-            sid="AllowCloudTrailDescribeKey",
-            actions=["kms:DescribeKey"],
-            principals=[iam.ServicePrincipal("cloudtrail.amazonaws.com")],
-            resources=["*"],
-        ))
+            )
+        )
+        trail_key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="AllowCloudTrailDescribeKey",
+                actions=["kms:DescribeKey"],
+                principals=[iam.ServicePrincipal("cloudtrail.amazonaws.com")],
+                resources=["*"],
+            )
+        )
 
         trail_bucket = s3.Bucket(
-            self, "TrailBucket",
+            self,
+            "TrailBucket",
             enforce_ssl=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             versioned=True,
@@ -210,7 +220,8 @@ class BaseStack(Stack):
         )
 
         cloudtrail.Trail(
-            self, "EdaTrail",
+            self,
+            "EdaTrail",
             trail_name=f"{prefix}-trail",
             bucket=trail_bucket,
             encryption_key=trail_key,
@@ -225,18 +236,53 @@ class BaseStack(Stack):
         self._create_vpc_endpoints_if_enabled()
 
         # ── Outputs ──────────────────────────────────────────
-        CfnOutput(self, "VpcId", value=self.vpc.vpc_id)
-        CfnOutput(self, "PrimarySubnetId", value=self.primary_subnet.subnet_id)
+        CfnOutput(
+            self,
+            "VpcId",
+            value=self.vpc.vpc_id,
+            export_name=foundation_export_name(self.node, "base", "VpcId"),
+        )
+        CfnOutput(
+            self,
+            "PrimarySubnetId",
+            value=self.primary_subnet.subnet_id,
+            export_name=foundation_export_name(
+                self.node,
+                "base",
+                "PrimarySubnetId",
+            ),
+        )
         CfnOutput(self, "PrimaryAz", value=self.primary_subnet.availability_zone)
         CfnOutput(
-            self, "SgClusterNodesId",
+            self,
+            "SgClusterNodesId",
             value=self.sg_cluster_nodes.security_group_id,
         )
-        CfnOutput(self, "SgFsxId", value=self.sg_fsx.security_group_id)
-        CfnOutput(self, "SgOntapId", value=self.sg_ontap.security_group_id)
-        CfnOutput(self, "KeyPairName", value=self.key_pair.key_pair_name)
         CfnOutput(
-            self, "KeyPairId",
+            self,
+            "SgFsxId",
+            value=self.sg_fsx.security_group_id,
+            export_name=foundation_export_name(self.node, "base", "SgFsxId"),
+        )
+        CfnOutput(
+            self,
+            "SgOntapId",
+            value=self.sg_ontap.security_group_id,
+            export_name=foundation_export_name(self.node, "base", "SgOntapId"),
+        )
+        CfnOutput(
+            self,
+            "KeyPairName",
+            value=self.key_pair.key_pair_name,
+            export_name=foundation_export_name(
+                self.node,
+                "base",
+                "KeyPairName",
+            ),
+        )
+        CfnOutput(
+            self,
+            "KeyPairId",
             value=self.key_pair.key_pair_id,
             description="Use: aws ssm get-parameter --name /ec2/keypair/<this-value> --with-decryption",
         )
@@ -248,10 +294,13 @@ class BaseStack(Stack):
             "PrimarySubnetId": self.primary_subnet.subnet_id,
             "PrimaryAz": self.primary_subnet.availability_zone,
             "SgClusterNodesId": self.sg_cluster_nodes.security_group_id,
+            "SgFsxId": self.sg_fsx.security_group_id,
+            "SgOntapId": self.sg_ontap.security_group_id,
             "KeyPairName": self.key_pair.key_pair_name,
         }.items():
             ssm.StringParameter(
-                self, f"Ssm{name}",
+                self,
+                f"Ssm{name}",
                 parameter_name=ssm_path(self.node, f"network/{name}"),
                 string_value=value,
             )
@@ -279,7 +328,8 @@ class BaseStack(Stack):
 
         # Endpoint 전용 SG (VPC CIDR 내부에서 HTTPS 443만 허용)
         self.sg_vpce = ec2.SecurityGroup(
-            self, "SgVpcEndpoints",
+            self,
+            "SgVpcEndpoints",
             vpc=vpc,
             description="Endpoint SG - HTTPS from VPC CIDR",
             allow_all_outbound=True,
@@ -328,7 +378,8 @@ class BaseStack(Stack):
                     ec2_client, full, primary_subnet.availability_zone
                 )
             ep = ec2.CfnVPCEndpoint(
-                self, f"IfcEp{short.capitalize()}",
+                self,
+                f"IfcEp{short.capitalize()}",
                 vpc_id=vpc.vpc_id,
                 service_name=full,
                 vpc_endpoint_type="Interface",
@@ -345,9 +396,7 @@ class BaseStack(Stack):
         for short in GATEWAY_ALWAYS:
             full = _svc_name(short)
             if managed_by_service[full]:
-                self._validate_managed_gateway_endpoint(
-                    full, managed_by_service[full]
-                )
+                self._validate_managed_gateway_endpoint(full, managed_by_service[full])
             elif external_by_service[full]:
                 self._validate_external_gateway_endpoint(
                     full,
@@ -357,7 +406,8 @@ class BaseStack(Stack):
                 skipped_gateway.append(short)
                 continue
             ep = ec2.CfnVPCEndpoint(
-                self, f"GwEp{short.capitalize()}",
+                self,
+                f"GwEp{short.capitalize()}",
                 vpc_id=vpc.vpc_id,
                 service_name=full,
                 vpc_endpoint_type="Gateway",
@@ -368,10 +418,13 @@ class BaseStack(Stack):
 
         # Outputs
         if created_interface:
-            CfnOutput(self, "CreatedInterfaceEndpoints", value=",".join(created_interface))
+            CfnOutput(
+                self, "CreatedInterfaceEndpoints", value=",".join(created_interface)
+            )
         if skipped_interface:
             CfnOutput(
-                self, "SkippedInterfaceEndpoints",
+                self,
+                "SkippedInterfaceEndpoints",
                 value=",".join(skipped_interface),
                 description="Already existed in VPC",
             )
@@ -379,7 +432,8 @@ class BaseStack(Stack):
             CfnOutput(self, "CreatedGatewayEndpoints", value=",".join(created_gateway))
         if skipped_gateway:
             CfnOutput(
-                self, "SkippedGatewayEndpoints",
+                self,
+                "SkippedGatewayEndpoints",
                 value=",".join(skipped_gateway),
                 description="Already existed or route table not found",
             )
@@ -395,9 +449,7 @@ class BaseStack(Stack):
 
     def _lookup_managed_vpc_endpoint_ids(self) -> set[str]:
         """Return endpoint physical IDs owned by this exact CloudFormation stack."""
-        client = boto3.client(
-            "cloudformation", region_name=Stack.of(self).region
-        )
+        client = boto3.client("cloudformation", region_name=Stack.of(self).region)
         return self._collect_managed_vpc_endpoint_ids(client, self.stack_name)
 
     @staticmethod
@@ -414,9 +466,8 @@ class BaseStack(Stack):
             return endpoint_ids
         except ClientError as exc:
             error = exc.response.get("Error", {})
-            if (
-                error.get("Code") == "ValidationError"
-                and "does not exist" in error.get("Message", "")
+            if error.get("Code") == "ValidationError" and "does not exist" in error.get(
+                "Message", ""
             ):
                 return set()
             raise RuntimeError(
@@ -543,12 +594,14 @@ class BaseStack(Stack):
                 "An available Interface endpoint with PrivateDnsEnabled=true is required."
             )
 
-        group_ids = sorted({
-            group["GroupId"]
-            for endpoint in available
-            for group in endpoint.get("Groups", [])
-            if group.get("GroupId")
-        })
+        group_ids = sorted(
+            {
+                group["GroupId"]
+                for endpoint in available
+                for group in endpoint.get("Groups", [])
+                if group.get("GroupId")
+            }
+        )
         if not group_ids:
             raise ValueError(
                 f"Existing endpoint(s) for {service_name} have no security groups."
@@ -563,8 +616,7 @@ class BaseStack(Stack):
             ) from exc
 
         security_groups = {
-            group["GroupId"]: group
-            for group in response.get("SecurityGroups", [])
+            group["GroupId"]: group for group in response.get("SecurityGroups", [])
         }
         for endpoint in available:
             if any(

@@ -37,8 +37,9 @@
 #
 #   ── Storage options ──────────────────────────────────────────────────
 #   ENABLE_OPENZFS            1 to create FSx OpenZFS (default: 1)
-#   OPENZFS_SIZE_GIB          GiB, 64 ~ 524288 (512 TiB) (default config: 320)
-#   OPENZFS_THROUGHPUT        MBps, one of 160|320|640|1280|2560|3840|5120|7680|10240 (default config: 2560)
+#   OPENZFS_SIZE_GIB          GiB, 16384 ~ 32768 (16 ~ 32 TiB) (default config: 32768)
+#   OPENZFS_THROUGHPUT        MBps, one of 160|320|640|1280|2560|3840|5120|7680|10240 (default config: 10240)
+#   OPENZFS_IOPS              User-provisioned IOPS (default config: 400000)
 #   ENABLE_ONTAP              1 to create FSx NetApp ONTAP (default: 0)
 #   ONTAP_SIZE_GIB            GiB, 1024 ~ 1048576 (1 PiB) (default: 10240)
 #   ONTAP_TPUT_PER_HA         MBps per HA pair, one of 1536|3072|6144 (default: 3072)
@@ -75,6 +76,11 @@ PCLUSTER_VERSION_SERIES="3.15"
 CDK_MIN_VERSION="2.1033.0"
 NODE_MIN_VERSION="22.0.0"
 EC2_STANDARD_VCPU_QUOTA_CODE="L-1216C47A"
+EC2_X_VCPU_QUOTA_CODE="L-7295265B"
+EC2_F_VCPU_QUOTA_CODE="L-74FC7D96"
+FSX_OPENZFS_STORAGE_QUOTA_CODE="L-88479C21"
+FSX_OPENZFS_THROUGHPUT_QUOTA_CODE="L-4EDE4065"
+FSX_OPENZFS_IOPS_QUOTA_CODE="L-E24B4DE4"
 
 # ── Config file loading ─────────────────────────────────────
 # Priority: env > config file > in-script default
@@ -223,6 +229,64 @@ validate_positive_integer() {
     || error "${name} must be a positive integer (found: ${value})"
 }
 
+check_quota_minimum() {
+  local service_code="$1"
+  local quota_code="$2"
+  local requested="$3"
+  local label="$4"
+  local quota_value
+  local quota_integer
+
+  if quota_value=$(aws service-quotas get-service-quota \
+      --service-code "${service_code}" \
+      --quota-code "${quota_code}" \
+      --region "${REGION}" \
+      --query 'Quota.Value' \
+      --output text 2>/dev/null); then
+    quota_integer="${quota_value%%.*}"
+    if [[ "${quota_integer}" =~ ^[0-9]+$ ]]; then
+      info "${label} quota: ${quota_integer}; requested: ${requested}"
+      ((quota_integer >= requested)) \
+        || error "${label} quota ${quota_integer} is below the requested ${requested}. Request a quota increase for ${quota_code} before retrying."
+    else
+      warn "Unable to parse ${label} quota value: ${quota_value}"
+    fi
+  else
+    warn "Unable to read ${label} quota. Verify quota ${quota_code} manually before deployment."
+  fi
+}
+
+check_ec2_vcpu_quota() {
+  local label="$1"
+  local quota_code="$2"
+  local baseline_vcpus="$3"
+  local ceiling_vcpus="$4"
+  local quota_value
+  local quota_vcpus
+
+  if quota_value=$(aws service-quotas get-service-quota \
+      --service-code ec2 \
+      --quota-code "${quota_code}" \
+      --region "${REGION}" \
+      --query 'Quota.Value' \
+      --output text 2>/dev/null); then
+    quota_vcpus="${quota_value%%.*}"
+    if [[ "${quota_vcpus}" =~ ^[0-9]+$ ]]; then
+      info "${label} vCPU quota: ${quota_vcpus}; deployment baseline: ${baseline_vcpus}; configured scale-out ceiling: ${ceiling_vcpus}"
+      ((quota_vcpus >= baseline_vcpus)) \
+        || error "${label} vCPU quota ${quota_vcpus} is below the deployment baseline ${baseline_vcpus}. Request a quota increase for ${quota_code} before retrying."
+      if ((quota_vcpus < ceiling_vcpus)); then
+        warn "Cluster creation can proceed, but ${label} vCPU quota cannot support the configured scale-out ceiling. Request at least ${ceiling_vcpus} vCPUs to use the full capacity."
+      fi
+      info "Existing ${label} instances also consume this regional quota."
+    else
+      warn "Unable to parse ${label} vCPU quota value: ${quota_value}"
+    fi
+  else
+    warn "Unable to read ${label} vCPU quota. Verify quota ${quota_code} manually before cluster creation."
+  fi
+}
+
 validate_tcp_port() {
   local name="$1"
   local value="$2"
@@ -287,6 +351,9 @@ if [[ "${ENABLE_DCV}" == "1" ]]; then
   [[ -n "${DCV_ALLOWED_IPS}" ]] \
     || error "DCV_ALLOWED_IPS is required when ENABLE_DCV=1"
   validate_ipv4_cidr "DCV_ALLOWED_IPS" "${DCV_ALLOWED_IPS}"
+  LOGIN_NODE_INSTANCE_TYPE="g6.4xlarge"
+else
+  LOGIN_NODE_INSTANCE_TYPE="r7i.2xlarge"
 fi
 
 # ══════════════════════════════════════════════════════════════
@@ -401,17 +468,51 @@ else
   # ── Storage options (defaults) ──
   ENABLE_OPENZFS="${ENABLE_OPENZFS:-1}"
   ENABLE_ONTAP="${ENABLE_ONTAP:-0}"
-  OPENZFS_SIZE_GIB="${OPENZFS_SIZE_GIB:-10240}"
-  OPENZFS_THROUGHPUT="${OPENZFS_THROUGHPUT:-2560}"
+  OPENZFS_SIZE_GIB="${OPENZFS_SIZE_GIB:-32768}"
+  OPENZFS_THROUGHPUT="${OPENZFS_THROUGHPUT:-10240}"
+  OPENZFS_IOPS="${OPENZFS_IOPS:-400000}"
   ONTAP_SIZE_GIB="${ONTAP_SIZE_GIB:-10240}"
   ONTAP_TPUT_PER_HA="${ONTAP_TPUT_PER_HA:-3072}"
   ONTAP_HA_PAIRS="${ONTAP_HA_PAIRS:-1}"
   validate_binary_flag "ENABLE_OPENZFS" "${ENABLE_OPENZFS}"
   validate_binary_flag "ENABLE_ONTAP" "${ENABLE_ONTAP}"
+  if [[ "${ENABLE_OPENZFS}" == "1" ]]; then
+    validate_positive_integer "OPENZFS_SIZE_GIB" "${OPENZFS_SIZE_GIB}"
+    validate_positive_integer "OPENZFS_THROUGHPUT" "${OPENZFS_THROUGHPUT}"
+    validate_positive_integer "OPENZFS_IOPS" "${OPENZFS_IOPS}"
+    ((OPENZFS_SIZE_GIB >= 16384 && OPENZFS_SIZE_GIB <= 32768)) \
+      || error "OPENZFS_SIZE_GIB must be between 16384 and 32768 GiB (16-32 TiB; found: ${OPENZFS_SIZE_GIB})"
+    case "${OPENZFS_THROUGHPUT}" in
+      160|320|640|1280|2560|3840|5120|7680|10240) ;;
+      *) error "OPENZFS_THROUGHPUT must be one of 160, 320, 640, 1280, 2560, 3840, 5120, 7680, 10240 (found: ${OPENZFS_THROUGHPUT})" ;;
+    esac
+    OPENZFS_MIN_IOPS=$((OPENZFS_SIZE_GIB * 3))
+    OPENZFS_TIER_MAX_IOPS=$((OPENZFS_THROUGHPUT * 40))
+    ((OPENZFS_IOPS >= OPENZFS_MIN_IOPS)) \
+      || error "OPENZFS_IOPS must be at least ${OPENZFS_MIN_IOPS} (3 IOPS/GiB)."
+    ((OPENZFS_IOPS <= OPENZFS_TIER_MAX_IOPS)) \
+      || error "OPENZFS_IOPS ${OPENZFS_IOPS} exceeds the ${OPENZFS_THROUGHPUT} MBps tier maximum of ${OPENZFS_TIER_MAX_IOPS}."
+    if [[ "${REGION}" == "ap-northeast-2" ]]; then
+      OPENZFS_SEOUL_MAX_IOPS=$((OPENZFS_SIZE_GIB * 50))
+      ((OPENZFS_IOPS <= OPENZFS_SEOUL_MAX_IOPS)) \
+        || error "OPENZFS_IOPS ${OPENZFS_IOPS} exceeds Seoul's 50 IOPS/GiB limit for ${OPENZFS_SIZE_GIB} GiB (${OPENZFS_SEOUL_MAX_IOPS})."
+    fi
+  fi
   if [[ "${ENABLE_OPENZFS}" != "1" && "${ENABLE_ONTAP}" != "1" ]]; then
     warn "Both ENABLE_OPENZFS and ENABLE_ONTAP are 0 — StorageStack will be skipped."
   fi
-  info "Storage: OpenZFS=${ENABLE_OPENZFS} (${OPENZFS_SIZE_GIB} GiB, ${OPENZFS_THROUGHPUT} MBps), ONTAP=${ENABLE_ONTAP} (${ONTAP_SIZE_GIB} GiB, ${ONTAP_HA_PAIRS} HA × ${ONTAP_TPUT_PER_HA} MBps)"
+  info "Storage: OpenZFS=${ENABLE_OPENZFS} (${OPENZFS_SIZE_GIB} GiB, ${OPENZFS_THROUGHPUT} MBps, ${OPENZFS_IOPS} IOPS), ONTAP=${ENABLE_ONTAP} (${ONTAP_SIZE_GIB} GiB, ${ONTAP_HA_PAIRS} HA × ${ONTAP_TPUT_PER_HA} MBps)"
+  if [[ "${ENABLE_OPENZFS}" == "1" ]]; then
+    check_quota_minimum fsx "${FSX_OPENZFS_STORAGE_QUOTA_CODE}" \
+      "${OPENZFS_SIZE_GIB}" "FSx OpenZFS SSD storage capacity"
+    check_quota_minimum fsx "${FSX_OPENZFS_THROUGHPUT_QUOTA_CODE}" \
+      "${OPENZFS_THROUGHPUT}" "FSx OpenZFS throughput capacity"
+    check_quota_minimum fsx "${FSX_OPENZFS_IOPS_QUOTA_CODE}" \
+      "${OPENZFS_IOPS}" "FSx OpenZFS disk IOPS"
+    if [[ "${OPENZFS_THROUGHPUT}" == "10240" && "${OPENZFS_IOPS}" == "400000" ]]; then
+      warn "The maximum OpenZFS setting consumes the default regional throughput and IOPS quotas. Deploy no other OpenZFS file system without first increasing those quotas."
+    fi
+  fi
 
   # ── License server (mandatory) ──
   info "License server: always enabled (${LICENSE_INSTANCE_TYPE}, manager=${LICENSE_MANAGER_PORT}, vendor=${LICENSE_VENDOR_PORT})"
@@ -420,7 +521,7 @@ else
   if [[ "${ENABLE_LOGIN_NODE}" != "1" ]]; then
     warn "LoginNodes disabled — on-prem clients need matching Slurm, munge.key, UID/GID, and a TCP 6817 ingress rule to the Head Node."
   fi
-  info "LoginNodes: ENABLE_LOGIN_NODE=${ENABLE_LOGIN_NODE}"
+  info "LoginNodes: ENABLE_LOGIN_NODE=${ENABLE_LOGIN_NODE} (${LOGIN_NODE_INSTANCE_TYPE})"
   info "Login Node DCV: ENABLE_DCV=${ENABLE_DCV}"
   info "SSM Session Manager: ENABLE_SSM=${ENABLE_SSM}"
 
@@ -457,9 +558,9 @@ else
     || error "VPC ${VPC_ID} must have DNS hostnames (enableDnsHostnames) enabled."
 
   # ── Validate required EC2 instance types in the selected single AZ ──
-  REQUIRED_INSTANCE_TYPES=("m7i.xlarge" "r8i.32xlarge")
+  REQUIRED_INSTANCE_TYPES=("m7i.xlarge" "x8aedz.24xlarge")
   if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
-    REQUIRED_INSTANCE_TYPES+=("r7i.2xlarge")
+    REQUIRED_INSTANCE_TYPES+=("${LOGIN_NODE_INSTANCE_TYPE}")
   fi
   REQUIRED_INSTANCE_TYPES+=("${LICENSE_INSTANCE_TYPE}")
   UNIQUE_REQUIRED_INSTANCE_TYPES=()
@@ -489,55 +590,58 @@ else
   done
   info "Required EC2 instance types are offered in ${SUBNET_AZ}"
 
-  # Standard On-Demand vCPU quota is shared by the M/R families used here.
-  # The deployment baseline is License + Head + optional Login. Compute has
-  # MinCount=0 and contributes only to the configured scale-out ceiling.
+  # The Compute resource uses the distinct EC2 X-family quota. Its MinCount=0
+  # means only the configured scale-out ceiling consumes that quota.
   aws_capture INSTANCE_VCPU_DATA "Instance vCPU lookup" \
     aws ec2 describe-instance-types --region "${REGION}" \
     --instance-types "${UNIQUE_REQUIRED_INSTANCE_TYPES[@]}" \
     --query 'InstanceTypes[].[InstanceType,VCpuInfo.DefaultVCpus]' --output text
   HEAD_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "m7i.xlarge" {print $2; exit}')
-  COMPUTE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "r8i.32xlarge" {print $2; exit}')
+  COMPUTE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "x8aedz.24xlarge" {print $2; exit}')
   LICENSE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk -v type="${LICENSE_INSTANCE_TYPE}" '$1 == type {print $2; exit}')
   [[ "${HEAD_VCPUS}" =~ ^[0-9]+$ && "${COMPUTE_VCPUS}" =~ ^[0-9]+$ && "${LICENSE_VCPUS}" =~ ^[0-9]+$ ]] \
     || error "Unable to determine vCPU counts for required instance types."
 
   STANDARD_BASELINE_VCPUS="${HEAD_VCPUS}"
-  STANDARD_MAX_VCPUS=$((HEAD_VCPUS + COMPUTE_VCPUS * 2))
+  STANDARD_MAX_VCPUS="${HEAD_VCPUS}"
+  X_BASELINE_VCPUS=0
+  X_MAX_VCPUS=$((COMPUTE_VCPUS * 2))
+  F_BASELINE_VCPUS=0
+  F_MAX_VCPUS=0
   if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
-    LOGIN_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "r7i.2xlarge" {print $2; exit}')
+    LOGIN_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk -v type="${LOGIN_NODE_INSTANCE_TYPE}" '$1 == type {print $2; exit}')
     [[ "${LOGIN_VCPUS}" =~ ^[0-9]+$ ]] \
-      || error "Unable to determine vCPU count for r7i.2xlarge."
-    STANDARD_BASELINE_VCPUS=$((STANDARD_BASELINE_VCPUS + LOGIN_VCPUS))
-    STANDARD_MAX_VCPUS=$((STANDARD_MAX_VCPUS + LOGIN_VCPUS))
-  fi
-  if [[ "${LICENSE_INSTANCE_TYPE%%.*}" =~ ^[acdhimrtz][0-9] ]]; then
-    STANDARD_BASELINE_VCPUS=$((STANDARD_BASELINE_VCPUS + LICENSE_VCPUS))
-    STANDARD_MAX_VCPUS=$((STANDARD_MAX_VCPUS + LICENSE_VCPUS))
-  else
-    warn "License instance type ${LICENSE_INSTANCE_TYPE} does not use the EC2 Standard On-Demand quota; verify its family-specific quota separately."
-  fi
-
-  if STANDARD_QUOTA_VALUE=$(aws service-quotas get-service-quota \
-      --service-code ec2 \
-      --quota-code "${EC2_STANDARD_VCPU_QUOTA_CODE}" \
-      --region "${REGION}" \
-      --query 'Quota.Value' \
-      --output text 2>/dev/null); then
-    STANDARD_QUOTA_VCPUS="${STANDARD_QUOTA_VALUE%%.*}"
-    if [[ "${STANDARD_QUOTA_VCPUS}" =~ ^[0-9]+$ ]]; then
-      info "EC2 Standard On-Demand vCPU quota: ${STANDARD_QUOTA_VCPUS}; deployment baseline: ${STANDARD_BASELINE_VCPUS}; configured scale-out ceiling: ${STANDARD_MAX_VCPUS}"
-      ((STANDARD_QUOTA_VCPUS >= STANDARD_BASELINE_VCPUS)) \
-        || error "EC2 Standard On-Demand vCPU quota ${STANDARD_QUOTA_VCPUS} is below the deployment baseline ${STANDARD_BASELINE_VCPUS}. Request a quota increase for ${EC2_STANDARD_VCPU_QUOTA_CODE} before retrying."
-      if ((STANDARD_QUOTA_VCPUS < STANDARD_MAX_VCPUS)); then
-        warn "Cluster creation can proceed, but the account quota cannot support Compute MaxCount=2 together with the License, Head, and Login nodes. Request at least ${STANDARD_MAX_VCPUS} vCPUs to use the full configured capacity."
-      fi
-      info "Existing Standard-family instance usage also consumes this regional quota."
+      || error "Unable to determine vCPU count for ${LOGIN_NODE_INSTANCE_TYPE}."
+    if [[ "${ENABLE_DCV}" == "1" ]]; then
+      F_BASELINE_VCPUS=$((F_BASELINE_VCPUS + LOGIN_VCPUS))
+      F_MAX_VCPUS=$((F_MAX_VCPUS + LOGIN_VCPUS))
     else
-      warn "Unable to parse EC2 Standard On-Demand vCPU quota value: ${STANDARD_QUOTA_VALUE}"
+      STANDARD_BASELINE_VCPUS=$((STANDARD_BASELINE_VCPUS + LOGIN_VCPUS))
+      STANDARD_MAX_VCPUS=$((STANDARD_MAX_VCPUS + LOGIN_VCPUS))
     fi
-  else
-    warn "Unable to read EC2 Standard On-Demand vCPU quota. Verify quota ${EC2_STANDARD_VCPU_QUOTA_CODE} manually before cluster creation."
+  fi
+  case "${LICENSE_INSTANCE_TYPE%%.*}" in
+    x[0-9]*)
+      X_BASELINE_VCPUS=$((X_BASELINE_VCPUS + LICENSE_VCPUS))
+      X_MAX_VCPUS=$((X_MAX_VCPUS + LICENSE_VCPUS))
+      ;;
+    [acdhimrtz][0-9]*)
+      STANDARD_BASELINE_VCPUS=$((STANDARD_BASELINE_VCPUS + LICENSE_VCPUS))
+      STANDARD_MAX_VCPUS=$((STANDARD_MAX_VCPUS + LICENSE_VCPUS))
+      ;;
+    *)
+      warn "License instance type ${LICENSE_INSTANCE_TYPE} uses a family-specific EC2 quota; verify it separately."
+      ;;
+  esac
+
+  check_ec2_vcpu_quota "EC2 Standard On-Demand" \
+    "${EC2_STANDARD_VCPU_QUOTA_CODE}" "${STANDARD_BASELINE_VCPUS}" \
+    "${STANDARD_MAX_VCPUS}"
+  check_ec2_vcpu_quota "EC2 X On-Demand" \
+    "${EC2_X_VCPU_QUOTA_CODE}" "${X_BASELINE_VCPUS}" "${X_MAX_VCPUS}"
+  if [[ "${ENABLE_DCV}" == "1" ]]; then
+    check_ec2_vcpu_quota "EC2 On-Demand F instances (g6.4xlarge)" \
+      "${EC2_F_VCPU_QUOTA_CODE}" "${F_BASELINE_VCPUS}" "${F_MAX_VCPUS}"
   fi
 
   # ── Validate subnet connectivity (AWS API reachability) ──
@@ -660,6 +764,7 @@ else
     -c "eda:enable_ontap=${ENABLE_ONTAP}"
     -c "eda:openzfs_size_gib=${OPENZFS_SIZE_GIB}"
     -c "eda:openzfs_throughput=${OPENZFS_THROUGHPUT}"
+    -c "eda:openzfs_iops=${OPENZFS_IOPS}"
     -c "eda:ontap_size_gib=${ONTAP_SIZE_GIB}"
     -c "eda:ontap_tput_per_ha=${ONTAP_TPUT_PER_HA}"
     -c "eda:ontap_ha_pairs=${ONTAP_HA_PAIRS}"
@@ -723,6 +828,41 @@ for var_name in SUBNET_ID SG_CLUSTER KEY_PAIR_NAME KEY_PAIR_ID; do
   [[ "${val}" != "null" && -n "${val}" ]] || error "Could not find ${var_name} value in outputs.json (stack: ${BASE_STACK})"
 done
 
+# Also validate the generated configuration path. This protects SKIP_CDK=1
+# from producing a cluster configuration that cannot launch in its existing AZ.
+aws_capture CONFIG_SUBNET_AZ "Generated config subnet Availability Zone lookup" \
+  aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
+  --query 'Subnets[0].AvailabilityZone' --output text
+CONFIG_REQUIRED_INSTANCE_TYPES=("m7i.xlarge" "x8aedz.24xlarge")
+if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
+  CONFIG_REQUIRED_INSTANCE_TYPES+=("${LOGIN_NODE_INSTANCE_TYPE}")
+fi
+CONFIG_REQUIRED_INSTANCE_TYPES+=("${LICENSE_INSTANCE_TYPE}")
+CONFIG_UNIQUE_INSTANCE_TYPES=()
+for instance_type in "${CONFIG_REQUIRED_INSTANCE_TYPES[@]}"; do
+  instance_type_seen=0
+  for existing_instance_type in "${CONFIG_UNIQUE_INSTANCE_TYPES[@]}"; do
+    if [[ "${existing_instance_type}" == "${instance_type}" ]]; then
+      instance_type_seen=1
+      break
+    fi
+  done
+  if [[ "${instance_type_seen}" == "0" ]]; then
+    CONFIG_UNIQUE_INSTANCE_TYPES+=("${instance_type}")
+  fi
+done
+for instance_type in "${CONFIG_UNIQUE_INSTANCE_TYPES[@]}"; do
+  aws_capture OFFERING_COUNT "Generated config instance offering lookup for ${instance_type}" \
+    aws ec2 describe-instance-type-offerings --region "${REGION}" \
+    --location-type availability-zone \
+    --filters "Name=location,Values=${CONFIG_SUBNET_AZ}" \
+              "Name=instance-type,Values=${instance_type}" \
+    --query 'length(InstanceTypeOfferings)' --output text
+  [[ "${OFFERING_COUNT}" -gt 0 ]] \
+    || error "Cannot generate a deployable cluster configuration: ${instance_type} is not offered in ${CONFIG_SUBNET_AZ}. Choose a supported SUBNET_ID before rerunning setup.sh."
+done
+info "Generated config instance types are offered in ${CONFIG_SUBNET_AZ}"
+
 # Storage volume IDs (optional — default empty to allow sed placeholder replace w/o error)
 VOL_TOOLS=$(jq -r --arg s "${STORAGE_STACK}" '.[$s].VolToolsId // empty' "${OUTPUTS}")
 VOL_WORK=$(jq -r --arg s "${STORAGE_STACK}" '.[$s].VolWorkId // empty' "${OUTPUTS}")
@@ -745,6 +885,7 @@ fi
 sed \
   -e "s|\${REGION}|${REGION}|g" \
   -e "s|\${DCV_ALLOWED_IPS}|${DCV_ALLOWED_IPS}|g" \
+  -e "s|\${LOGIN_NODE_INSTANCE_TYPE}|${LOGIN_NODE_INSTANCE_TYPE}|g" \
   -e "s|\${BASE.PrimarySubnetId}|${SUBNET_ID}|g" \
   -e "s|\${BASE.SgClusterNodesId}|${SG_CLUSTER}|g" \
   -e "s|\${BASE.KeyPairName}|${KEY_PAIR_NAME}|g" \

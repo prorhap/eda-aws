@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=hello
-#SBATCH --partition=eda-r8i
+#SBATCH --partition=eda-x8aedz
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2

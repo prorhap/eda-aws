@@ -2,9 +2,9 @@
 
 # EDA on AWS
 
-A project for building an EDA (simulation/regression) environment on AWS using
-ParallelCluster + FSx OpenZFS. (Default region: `ap-northeast-2` — configurable
-via `config/default.env`)
+A project for building an EDA simulation/regression environment with FSx
+OpenZFS and Slurm. It supports the existing AWS ParallelCluster workflow and
+an independent AWS PCS deployment option. Default region: `ap-northeast-2`.
 
 ---
 
@@ -14,10 +14,13 @@ via `config/default.env`)
   FSx OpenZFS/ONTAP, EDA license server, VPC endpoints, CloudTrail, and more
 - **ParallelCluster 3.15.x**: Deploys Slurm head node + compute fleet on top of
   the resources created by CDK
+- **AWS PCS option**: Deploys an AWS-managed Slurm control plane and PCS
+  Compute Node Groups
 - **VPC**: Reuses an existing VPC/private subnet (assumes a site-to-site VPN
   environment)
 - **Detailed design docs**: [`architecture_guide.md`](architecture_guide.md) /
   [`parallel_cluster_configuration.md`](parallel_cluster_configuration.md)
+- **Independent PCS guide**: [`pcs/README.md`](pcs/README.md)
 
 ### CloudFormation stacks deployed
 
@@ -29,9 +32,14 @@ Stack names are based on a prefix. Default `STACK_PREFIX=Eda`.
 | `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` volumes) or FSx ONTAP |
 | `{prefix}LicenseServer` | Always-deployed EC2 + static ENI for the EDA license server (MAC address persistence) |
 | `hpc-cluster` | ParallelCluster (Slurm) stack (created by the pcluster CLI) |
+| `{prefix}Pcs` | Optional AWS PCS cluster, login/compute CNGs, and queue |
+
+Use `setup.sh` for ParallelCluster and `pcs/pcs-setup.sh` for PCS. The two paths
+do not share cluster configuration, AMIs, CLIs, or lifecycle ownership.
 
 For multiple environments in one account, set a unique `STACK_PREFIX` and
-`CLUSTER_NAME` for each. Physical names and SSM paths are prefix-scoped.
+either ParallelCluster `CLUSTER_NAME` or PCS `PCS_CLUSTER_NAME` for each.
+Physical names and SSM paths are prefix-scoped.
 `STACK_PREFIX` must start with a letter, contain only letters, digits, or
 hyphens, and be at most 48 characters.
 
@@ -58,8 +66,8 @@ state. Preflight requires `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`,
 `ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
 `ec2:DescribeSecurityGroups`, `ec2:DescribeInstanceTypeOfferings`,
 `ec2:DescribeVpcAttribute`, `cloudformation:ListStacks`, and
-`cloudformation:ListStackResources`, in addition to the permissions required
-to deploy the stacks.
+`cloudformation:ListStackResources`, and `servicequotas:GetServiceQuota`, in
+addition to the permissions required to deploy the stacks.
 
 ### 2.2 Install required tools
 
@@ -178,12 +186,12 @@ setup.sh stages:
 | `REGION` | `ap-northeast-2` | Deployment region |
 | `STACK_PREFIX` | `Eda` | Prefix for CDK stacks, physical resources, and SSM paths |
 | `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `2560` | FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `10240` / `400000` | FSx OpenZFS maximum-performance baseline |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | Mandatory EDA license server instance |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` defaults |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended) |
-| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable Login Node DCV and restrict its source network |
+| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable DCV, select a `g6.4xlarge` Login Node, and restrict its source network |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
 | `ENABLE_SSM` | `0` | Allow Session Manager access |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | Skip stages |
@@ -191,6 +199,10 @@ setup.sh stages:
 The quota/reservation of FSx OpenZFS child volumes (tools/work/scratch) is
 auto-scaled in proportion to the parent capacity (to avoid the constraint
 where a quota larger than the parent is not allowed).
+
+The default OpenZFS throughput and IOPS values consume the default regional
+quotas in Seoul. The setup preflight checks the configured quota values; request
+an increase before deploying another OpenZFS file system in the same Region.
 
 ---
 
@@ -228,7 +240,9 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 
 This project uses ParallelCluster-managed DCV on the Login Node instead of a
 separate DCV EC2 stack. It does not download packages from the internet, and
-license checks use the existing S3 Gateway endpoint.
+license checks use the existing S3 Gateway endpoint. When DCV is enabled,
+`setup.sh` selects `g6.4xlarge` (one NVIDIA L4 GPU); otherwise the Login Node
+remains `r7i.2xlarge`.
 
 ```bash
 ENABLE_DCV=1 DCV_ALLOWED_IPS=172.16.4.0/24 \
@@ -470,6 +484,11 @@ eda-aws/
 │   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA license server
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
+├── pcs/                        # Independent AWS PCS CDK and deployment path
+│   ├── pcs-setup.sh
+│   ├── pcs/stack.py
+│   ├── scripts/preflight.py
+│   └── README.md
 ├── architecture_guide.md       # Overall architecture design
 └── parallel_cluster_configuration.md   # ParallelCluster environment and configuration guide
 ```

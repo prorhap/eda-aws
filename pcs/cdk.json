@@ -1,0 +1,13 @@
+{
+  "app": ".venv/bin/python app.py",
+  "context": {
+    "pcs:vpc_id": "",
+    "pcs:subnet_id": "",
+    "pcs:ami_id": "",
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:enableAdditionalMetadataCollection": false,
+    "@aws-cdk/core:explicitStackTags": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/aws-ec2:uniqueImdsv2TemplateName": true
+  }
+}

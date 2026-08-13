@@ -2,8 +2,9 @@
 
 # EDA on AWS
 
-AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS로
-구성하는 프로젝트입니다. (기본 리전: `ap-northeast-2` — `config/default.env`에서 변경 가능)
+AWS 위에서 EDA(simulation/regression) 환경을 FSx OpenZFS와 Slurm으로
+구성하는 프로젝트입니다. 클러스터 배포 모델은 기존 AWS ParallelCluster와
+별도 AWS PCS 옵션을 제공합니다. (기본 리전: `ap-northeast-2`)
 
 ---
 
@@ -12,9 +13,11 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 - **CDK (Python 3.12, aws-cdk-lib 2.x)**: VPC import, 보안그룹, FSx OpenZFS/ONTAP,
   EDA 라이센스 서버, VPC endpoints, CloudTrail 등을 배포
 - **ParallelCluster 3.15.x**: CDK가 만든 리소스 위에 Slurm head node + compute fleet 배포
+- **AWS PCS 옵션**: AWS 관리 Slurm control plane + PCS Compute Node Groups 배포
 - **VPC**: 기존 VPC/Private subnet을 재사용 (사이트간 VPN 환경 전제)
 - **상세 설계 문서**: [`architecture_guide.md`](architecture_guide.ko.md) /
   [`parallel_cluster_configuration.md`](parallel_cluster_configuration.ko.md)
+- **PCS 독립 배포 가이드**: [`pcs/README.ko.md`](pcs/README.ko.md)
 
 ### 배포되는 CloudFormation 스택
 
@@ -26,9 +29,14 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 | `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` 볼륨) 또는 FSx ONTAP |
 | `{prefix}LicenseServer` | 항상 배포되는 EDA 라이센스 서버용 EC2 + static ENI (MAC 영속성) |
 | `hpc-cluster` | ParallelCluster (Slurm) 스택 (pcluster CLI가 생성) |
+| `{prefix}Pcs` | 선택 사항: AWS PCS cluster + login/compute CNG + queue |
 
-같은 계정에 여러 환경을 둘 때는 `STACK_PREFIX`와 `CLUSTER_NAME`을 환경별로
-다르게 설정합니다. 물리 리소스 이름과 SSM 경로도 prefix별로 격리됩니다.
+ParallelCluster는 `setup.sh`, PCS는 `pcs/pcs-setup.sh`를 사용합니다. 두 경로는
+클러스터 정의, AMI, CLI, 수명주기를 공유하지 않습니다.
+
+같은 계정에 여러 환경을 둘 때는 `STACK_PREFIX`와 ParallelCluster의
+`CLUSTER_NAME` 또는 PCS의 `PCS_CLUSTER_NAME`을 환경별로 다르게 설정합니다.
+물리 리소스 이름과 SSM 경로도 prefix별로 격리됩니다.
 `STACK_PREFIX`는 영문자로 시작하고 영문자·숫자·하이픈만 사용할 수 있으며
 최대 48자입니다.
 
@@ -55,7 +63,8 @@ aws configure set region ap-northeast-2
 `ec2:DescribeVpcEndpoints`, `ec2:DescribeVpcEndpointServices`,
 `ec2:DescribeSecurityGroups`, `ec2:DescribeInstanceTypeOfferings`,
 `ec2:DescribeVpcAttribute`, `cloudformation:ListStacks`,
-`cloudformation:ListStackResources`가 필요합니다.
+`cloudformation:ListStackResources`, `servicequotas:GetServiceQuota`가
+필요합니다.
 
 ### 2.2 필수 도구 설치
 
@@ -173,18 +182,22 @@ setup.sh 단계:
 | `REGION` | `ap-northeast-2` | 배포 리전 |
 | `STACK_PREFIX` | `Eda` | CDK 스택·물리 리소스·SSM 경로 접두사 |
 | `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` | `1` / `320` / `2560` | FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `10240` / `400000` | 최대 성능 기준 FSx OpenZFS |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 필수 EDA 라이센스 서버 인스턴스 |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` 기본값 |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장) |
-| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | Login Node DCV 활성화 및 접속 허용망 |
+| `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | DCV 활성화, `g6.4xlarge` Login Node 선택 및 접속 허용망 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
 | `ENABLE_SSM` | `0` | Session Manager 접속 허용 |
 | `SKIP_CDK` / `SKIP_CLUSTER` | `0` | 단계 건너뛰기 |
 
 FSx OpenZFS 자식 볼륨(tools/work/scratch)의 quota/reservation은 부모 용량에 비례해
 자동 스케일링됩니다(부모 용량보다 큰 quota 지정 불가 제약을 회피).
+
+기본 OpenZFS throughput과 IOPS는 서울 리전의 기본 quota를 모두 사용합니다.
+`setup.sh`가 설정된 quota 값은 사전 확인하며, 같은 리전에 다른 OpenZFS 파일
+시스템을 추가하려면 먼저 quota 증설을 요청해야 합니다.
 
 ---
 
@@ -220,7 +233,8 @@ ssh -i ~/.ssh/eda-cluster-key-<ACCOUNT>.pem ec2-user@<LOGIN_NODE_NLB_DNS>
 
 별도 DCV EC2 스택 없이 ParallelCluster가 Login Node에 설치하는 DCV를 사용합니다.
 격리망에서 외부 패키지를 다운로드하지 않으며, 라이선스 확인은 기존 S3 Gateway
-Endpoint를 사용합니다.
+Endpoint를 사용합니다. DCV를 활성화하면 `setup.sh`가 NVIDIA L4 GPU 1개가 있는
+`g6.4xlarge` Login Node를 선택하고, 비활성화하면 `r7i.2xlarge`를 사용합니다.
 
 ```bash
 ENABLE_DCV=1 DCV_ALLOWED_IPS=172.16.4.0/24 \
@@ -450,6 +464,11 @@ eda-aws/
 │   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA 라이선스 서버
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
+├── pcs/                        # 독립 AWS PCS CDK/검증/배포 경로
+│   ├── pcs-setup.sh
+│   ├── pcs/stack.py
+│   ├── scripts/preflight.py
+│   └── README.ko.md
 ├── architecture_guide.md       # 전체 아키텍처 설계
 └── parallel_cluster_configuration.md   # ParallelCluster 환경 구성 및 설정 가이드
 ```

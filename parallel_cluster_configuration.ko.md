@@ -17,8 +17,8 @@
 | 노드 | 인스턴스 타입 | 수량 | 역할 |
 |---|---|---|---|
 | Head Node | `m7i.xlarge` | 1 (상시 가동) | Slurm 컨트롤러, 잡 스케줄러 |
-| Login Node | `r7i.2xlarge` | 1 (풀) | 사용자 진입점 — 잡 제출, 파일 접근 |
-| Compute Node | `r8i.32xlarge` | 0–2 (자동 증감) | 시뮬레이션 / 리그레션 워크로드 |
+| Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 (풀) | 기본 `r7i.2xlarge`; DCV 활성화 시 `g6.4xlarge` |
+| Compute Node | `x8aedz.24xlarge` | 0–2 (자동 증감) | PowerArtist scratch, 시뮬레이션 / 리그레션 워크로드 |
 
 처음 사용하는 경우에는 **Login Node에서 작업을 시작하고, Compute Node에서 실제
 EDA 작업이 실행된다**고 이해하면 된다. Head Node는 이 둘을 조정하는 관리 노드다.
@@ -34,21 +34,23 @@ EDA 작업이 실행된다**고 이해하면 된다. Head Node는 이 둘을 조
   접속하거나 EDA 작업을 실행하지 않는다.
 - **Compute Node**: Slurm이 제출된 잡을 실행하는 워커 노드다. `MinCount: 0`이라
   잡이 필요할 때 시작되고, 15분 유휴 후 자동 종료된다
-  (`ScaledownIdletime: 15`). 인스턴스 종료 시 로컬 디스크의 데이터는 보존되지
-  않으므로 입력과 결과는 `/fsxz/work` 또는 `/fsxz/scratch`에 둔다. 일반적으로
-  직접 SSH하지 않고 Slurm job script 안에서 실행한다.
+  (`ScaledownIdletime: 15`). `x8aedz.24xlarge` 한 대는 96 vCPU, 3 TiB
+  memory, 로컬 NVMe 7.6 TB를 가지며 ParallelCluster가 이를 `/local_scratch`에
+  마운트한다. 이는 일시 저장소이므로 높은 I/O 작업 경로로 사용한 뒤 필요한
+  결과는 job이 끝나기 전에 `/fsxz/work`로 복사한다. 일반적으로 직접 SSH하지
+  않고 Slurm job script 안에서 실행한다.
 
 **일반적인 사용 흐름**
 
 1. 엔지니어가 VPN을 통해 Login Node에 SSH로 접속한다.
 2. `/fsxz/work`에 소스와 job script를 준비한다.
 3. Login Node에서 `sbatch`로 job을 제출한다.
-4. Head Node의 Slurm이 `eda-r8i` partition에서 Compute Node를 시작하고 job을 실행한다.
+4. Head Node의 Slurm이 `eda-x8aedz` partition에서 Compute Node를 시작하고 job을 실행한다.
 5. 엔지니어가 Login Node에서 `squeue`와 job 출력 파일로 상태와 결과를 확인한다.
 
 Slurm에서 **job**은 필요한 CPU·메모리·실행 시간을 포함한 실행 요청이고,
 **partition**은 그 job을 실행할 Compute Node 그룹이다. 이 프로젝트의 기본
-partition 이름은 `eda-r8i`다.
+partition 이름은 `eda-x8aedz`다.
 
 ```bash
 # Login Node에서 실행
@@ -69,17 +71,20 @@ squeue -u "$USER"             # 내 job 상태 확인
 |---|---|---|
 | `/fsxz/tools` | FSx OpenZFS | EDA 툴, 공유 실행파일 |
 | `/fsxz/work` | FSx OpenZFS | RTL 소스, 프로젝트 파일, 시뮬레이션 결과 |
-| `/fsxz/scratch` | FSx OpenZFS | 잡별 임시 작업 공간 (`$USER/$SLURM_JOB_ID`) |
+| `/fsxz/scratch` | FSx OpenZFS | 공유 staging 및 비로컬 임시 데이터 |
+| `/local_scratch` | Compute Node 로컬 NVMe | 높은 I/O job 작업 경로 (`$SLURM_JOB_ID`), 공유되지 않으며 노드 종료 시 삭제 |
 
-세 볼륨 모두 Head, Login, Compute 노드에 부팅 시 NFS로 자동 마운트된다
-(`pcluster-config.yaml`의 `SharedStorage` 섹션). 어느 노드에서 쓴 파일이든 즉시 다른 노드에서 보인다.
+`/fsxz/*` 세 볼륨은 모두 Head, Login, Compute 노드에 부팅 시 NFS로 자동
+마운트된다(`pcluster-config.yaml`의 `SharedStorage` 섹션). 어느 노드에서 쓴
+파일이든 즉시 다른 노드에서 보인다. `/local_scratch`는 ParallelCluster의
+`EphemeralVolume` 설정으로 Compute Node에만 마운트된다.
 
 ### 1.3 Slurm 설정
 
 | 설정 | 값 | 효과 |
 |---|---|---|
 | 스케줄러 | Slurm | — |
-| 큐 이름 | `eda-r8i` | 잡 스크립트에서 `#SBATCH --partition=eda-r8i` 사용 |
+| 큐 이름 | `eda-x8aedz` | 잡 스크립트에서 `#SBATCH --partition=eda-x8aedz` 사용 |
 | Capacity 타입 | On-Demand | Spot 인터럽션 없음 |
 | 메모리 기반 스케줄링 | 활성화 (`CR_Core_Memory`) | 잡 스크립트의 `--mem` 값이 실제로 적용됨 |
 | 유휴 스케일다운 | 15분 | Compute 노드가 15분 유휴 후 자동 종료 |
@@ -91,6 +96,8 @@ squeue -u "$USER"             # 내 job 상태 확인
 - **OS**: RHEL 8 (`rhel8`)
 - **Head Node 루트 볼륨**: 500 GiB gp3, 6000 IOPS, 250 MB/s
 - **Compute Node 루트 볼륨**: 200 GiB gp3, 3000 IOPS, 125 MB/s
+- **Compute 로컬 scratch**: `x8aedz.24xlarge`의 로컬 NVMe SSD를
+  `/local_scratch`에 마운트한다. Compute Node 종료 시 삭제된다.
 - **FSx OpenZFS 암호화**: KMS로 at-rest 암호화 (`EdaStorage` 스택의 `OpenZfsKey`)
 
 ### 1.5 모니터링
@@ -148,7 +155,8 @@ HeadNode:
 LoginNodes:
   Pools:
     - Count: 1                      # 동시 Login Node 수
-      InstanceType: r7i.2xlarge     # 인터랙티브 작업이 많으면 큰 타입으로 변경
+      InstanceType: ${LOGIN_NODE_INSTANCE_TYPE}
+      # 기본 r7i.2xlarge; ENABLE_DCV=1이면 g6.4xlarge
 
 SharedStorage:
   - MountDir: /fsxz/tools           # 전체 노드에서의 마운트 경로
@@ -160,9 +168,13 @@ Scheduling:
     ScaledownIdletime: 15           # 유휴 Compute 종료까지 대기 시간(분)
     EnableMemoryBasedScheduling: true
   SlurmQueues:
-    - Name: eda-r8i
+    - Name: eda-x8aedz
+      ComputeSettings:
+        LocalStorage:
+          EphemeralVolume:
+            MountDir: /local_scratch
       ComputeResources:
-        - InstanceType: r8i.32xlarge
+        - InstanceType: x8aedz.24xlarge
           MaxCount: 2               # 최대 동시 Compute 노드 수
 ```
 
@@ -194,8 +206,8 @@ pcluster update-cluster \
 
 ```yaml
 ComputeResources:
-  - Name: r128
-    InstanceType: r8i.32xlarge   # 인스턴스 타입 변경
+  - Name: x8aedz24
+    InstanceType: x8aedz.24xlarge   # 인스턴스 타입 변경
     MinCount: 0
     MaxCount: 2                  # 최대 동시 노드 수 변경
 ```
@@ -208,7 +220,7 @@ ComputeResources:
 
 ```yaml
 SlurmQueues:
-  - Name: eda-r8i
+  - Name: eda-x8aedz
     # ... 기존 큐 ...
   - Name: eda-mem
     CapacityType: ONDEMAND
@@ -231,8 +243,9 @@ CDK 스토리지 스택을 재배포한다.
 
 ```bash
 # config/default.env 수정:
-#   OPENZFS_SIZE_GIB=640
-#   OPENZFS_THROUGHPUT=2560
+#   OPENZFS_SIZE_GIB=32768
+#   OPENZFS_THROUGHPUT=10240
+#   OPENZFS_IOPS=400000
 
 SKIP_CLUSTER=1 ./setup.sh
 ```
@@ -599,7 +612,7 @@ aws ssm start-session --target $INSTANCE_ID
 ```bash
 # 파티션/노드 상태
 sinfo
-# 기대: eda-r8i 파티션, idle~ 상태 (compute node가 아직 안 떠있음)
+# 기대: eda-x8aedz 파티션, idle~ 상태 (compute node가 아직 안 떠있음)
 
 # 상세 정보
 scontrol show partition
@@ -639,7 +652,7 @@ mkdir -p "$TEST_DIR"
 cat > "$TEST_DIR/test_job.sh" << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=cluster-test
-#SBATCH --partition=eda-r8i
+#SBATCH --partition=eda-x8aedz
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=00:10:00
@@ -652,11 +665,11 @@ echo "Node: $(hostname)"
 echo "CPUs: $SLURM_CPUS_PER_TASK"
 echo "Memory: ${SLURM_MEM_PER_NODE:-N/A} MB"
 
-for mount_dir in /fsxz/tools /fsxz/work /fsxz/scratch; do
+for mount_dir in /fsxz/tools /fsxz/work /fsxz/scratch /local_scratch; do
   findmnt -T "$mount_dir" >/dev/null
 done
 
-probe="/fsxz/scratch/$USER/.cluster-test-${SLURM_JOB_ID}"
+probe="/local_scratch/.cluster-test-${SLURM_JOB_ID}"
 printf 'cluster validation\n' > "$probe"
 test "$(cat "$probe")" = "cluster validation"
 rm -f "$probe"
@@ -718,13 +731,15 @@ SSH_KEY="$HOME/.ssh/eda-cluster-key-${ACCOUNT_ID}.pem" \
 cat > /fsxz/scratch/$USER/run_vcs.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=vcs_smoke
-#SBATCH --partition=eda-r8i
+#SBATCH --partition=eda-x8aedz
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
 
-WORKDIR=/fsxz/scratch/$USER/$SLURM_JOB_ID
-mkdir -p $WORKDIR && cd $WORKDIR
+WORKDIR=/local_scratch/$SLURM_JOB_ID
+mkdir -p "$WORKDIR"
+trap 'rm -rf "$WORKDIR"' EXIT
+cd "$WORKDIR"
 
 # Tool setup
 source /fsxz/tools/eda/env/vcs_setup.sh
@@ -818,7 +833,13 @@ pcluster get-cluster-log-events --cluster-name $CLUSTER_NAME \
 sudo tail -f /var/log/parallelcluster/clustermgtd.log
 sudo tail -f /var/log/parallelcluster/slurm_resume.log
 
-# EC2 인스턴스 제한 확인
+# X 계열 On-Demand vCPU quota 확인
+# Compute Node 2대의 최대 요구량은 192 vCPU.
+aws service-quotas get-service-quota \
+  --service-code ec2 \
+  --quota-code L-7295265B
+
+# DCV는 g6.4xlarge(16 vCPU)를 사용하며 F-instance quota를 확인한다.
 aws service-quotas get-service-quota \
   --service-code ec2 \
   --quota-code L-74FC7D96
