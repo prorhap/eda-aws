@@ -1,7 +1,7 @@
 import pytest
 import aws_cdk as cdk
 
-from cdk.naming import resource_prefix, ssm_path
+from cdk.naming import foundation_export_name, resource_prefix, ssm_path
 
 
 def test_default_prefix_preserves_existing_resource_namespace():
@@ -16,6 +16,10 @@ def test_custom_prefix_is_normalized_and_scopes_ssm_paths():
 
     assert resource_prefix(app.node) == "eda-prod"
     assert ssm_path(app.node, "/storage/VolWorkId") == "/eda-prod/storage/VolWorkId"
+    assert (
+        foundation_export_name(app.node, "storage", "OpenZfsDns")
+        == "eda-prod:storage:OpenZfsDns"
+    )
 
 
 @pytest.mark.parametrize(

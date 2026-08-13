@@ -49,10 +49,11 @@ from aws_cdk import (
     aws_sns as sns,
     aws_sns_subscriptions as subscriptions,
     aws_secretsmanager as secretsmanager,
+    custom_resources as cr,
     CfnOutput,
 )
 from constructs import Construct
-from cdk.naming import resource_prefix, ssm_path
+from cdk.naming import foundation_export_name, resource_prefix, ssm_path
 
 
 # ─── OpenZFS SINGLE_AZ_HA_2 validation tables ──────────────────────
@@ -93,7 +94,6 @@ def openzfs_volume_layout(size_gib: int) -> dict[str, tuple[int, int]]:
 
 
 class StorageStack(Stack):
-
     def __init__(
         self,
         scope: Construct,
@@ -131,23 +131,20 @@ class StorageStack(Stack):
 
         # ── Shared SNS alarm topic ───────────────────────────
         alarm_topic = sns.Topic(
-            self, "FsxAlarmTopic",
+            self,
+            "FsxAlarmTopic",
             display_name="EDA FSx Alarms",
         )
         alarm_email = self.node.try_get_context("alarm_email")
         if alarm_email:
-            alarm_topic.add_subscription(
-                subscriptions.EmailSubscription(alarm_email)
-            )
+            alarm_topic.add_subscription(subscriptions.EmailSubscription(alarm_email))
 
         # ══════════════════════════════════════════════════════
         #  FSx for OpenZFS — SINGLE_AZ_HA_2
         # ══════════════════════════════════════════════════════
         if enable_openzfs:
             oz_size = _ctx_int("eda:openzfs_size_gib", OPENZFS_DEFAULT_SIZE_GIB)
-            oz_tput = _ctx_int(
-                "eda:openzfs_throughput", OPENZFS_DEFAULT_THROUGHPUT
-            )
+            oz_tput = _ctx_int("eda:openzfs_throughput", OPENZFS_DEFAULT_THROUGHPUT)
             oz_iops = _ctx_int("eda:openzfs_iops", OPENZFS_DEFAULT_IOPS)
 
             if not (OPENZFS_MIN_GIB <= oz_size <= OPENZFS_MAX_GIB):
@@ -183,7 +180,8 @@ class StorageStack(Stack):
                     )
 
             oz_key = kms.Key(
-                self, "OpenZfsKey",
+                self,
+                "OpenZfsKey",
                 alias=f"{prefix}/fsx-openzfs",
                 description="Encryption key for EDA FSx OpenZFS",
                 enable_key_rotation=True,
@@ -191,7 +189,8 @@ class StorageStack(Stack):
             )
 
             self.openzfs = fsx.CfnFileSystem(
-                self, "FsxOpenZfs",
+                self,
+                "FsxOpenZfs",
                 file_system_type="OPENZFS",
                 storage_capacity=oz_size,
                 storage_type="SSD",
@@ -221,7 +220,8 @@ class StorageStack(Stack):
             scratch_quota, _ = volume_layout["scratch"]
 
             self.vol_tools = self._create_openzfs_volume(
-                "OzVolTools", "fsxz_tools",
+                "OzVolTools",
+                "fsxz_tools",
                 parent_volume_id=self.openzfs.attr_root_volume_id,
                 compression="ZSTD",
                 nfs_options=["rw", "crossmnt", "sync"],
@@ -230,7 +230,8 @@ class StorageStack(Stack):
                 reservation_gib=tools_reservation,
             )
             self.vol_work = self._create_openzfs_volume(
-                "OzVolWork", "fsxz_work",
+                "OzVolWork",
+                "fsxz_work",
                 parent_volume_id=self.openzfs.attr_root_volume_id,
                 compression="ZSTD",
                 nfs_options=["rw", "crossmnt", "sync"],
@@ -239,7 +240,8 @@ class StorageStack(Stack):
                 reservation_gib=work_reservation,
             )
             self.vol_scratch = self._create_openzfs_volume(
-                "OzVolScratch", "fsxz_scratch",
+                "OzVolScratch",
+                "fsxz_scratch",
                 parent_volume_id=self.openzfs.attr_root_volume_id,
                 compression="LZ4",
                 nfs_options=["rw", "crossmnt", "sync"],
@@ -251,12 +253,23 @@ class StorageStack(Stack):
             self._add_openzfs_alarms(self.openzfs.ref, alarm_topic)
 
             CfnOutput(self, "OpenZfsFsId", value=self.openzfs.ref)
+            CfnOutput(
+                self,
+                "OpenZfsDns",
+                value=self.openzfs.attr_dns_name,
+                export_name=foundation_export_name(
+                    self.node,
+                    "storage",
+                    "OpenZfsDns",
+                ),
+            )
             CfnOutput(self, "VolToolsId", value=self.vol_tools.ref)
             CfnOutput(self, "VolWorkId", value=self.vol_work.ref)
             CfnOutput(self, "VolScratchId", value=self.vol_scratch.ref)
 
             ssm.StringParameter(
-                self, "SsmOpenZfsDns",
+                self,
+                "SsmOpenZfsDns",
                 parameter_name=ssm_path(self.node, "storage/OpenZfsDns"),
                 string_value=self.openzfs.attr_dns_name,
             )
@@ -266,7 +279,8 @@ class StorageStack(Stack):
                 "VolScratchId": self.vol_scratch,
             }.items():
                 ssm.StringParameter(
-                    self, f"SsmOz{name}",
+                    self,
+                    f"SsmOz{name}",
                     parameter_name=ssm_path(self.node, f"storage/{name}"),
                     string_value=vol.ref,
                 )
@@ -297,7 +311,8 @@ class StorageStack(Stack):
                 )
 
             ot_key = kms.Key(
-                self, "OntapKey",
+                self,
+                "OntapKey",
                 alias=f"{prefix}/fsx-ontap",
                 description="Encryption key for EDA FSx ONTAP",
                 enable_key_rotation=True,
@@ -306,17 +321,19 @@ class StorageStack(Stack):
 
             # fsxadmin password (필수는 아니지만 ONTAP CLI 접속용으로 저장)
             ontap_admin_secret = secretsmanager.Secret(
-                self, "OntapAdminSecret",
+                self,
+                "OntapAdminSecret",
                 description="FSx ONTAP fsxadmin password",
                 generate_secret_string=secretsmanager.SecretStringGenerator(
                     password_length=24,
-                    exclude_characters='"@/\\\'',
+                    exclude_characters="\"@/\\'",
                     require_each_included_type=True,
                 ),
             )
 
             self.ontap = fsx.CfnFileSystem(
-                self, "FsxOntap",
+                self,
+                "FsxOntap",
                 file_system_type="ONTAP",
                 storage_capacity=ot_size,
                 storage_type="SSD",
@@ -324,7 +341,7 @@ class StorageStack(Stack):
                 security_group_ids=[sg_ontap.security_group_id],
                 kms_key_id=ot_key.key_id,
                 ontap_configuration=fsx.CfnFileSystem.OntapConfigurationProperty(
-                    deployment_type="SINGLE_AZ_2",          # 2nd-gen, 최대 12 HA pair
+                    deployment_type="SINGLE_AZ_2",  # 2nd-gen, 최대 12 HA pair
                     ha_pairs=ot_ha_pairs,
                     throughput_capacity_per_ha_pair=ot_tput_per_ha,
                     automatic_backup_retention_days=7,
@@ -340,7 +357,8 @@ class StorageStack(Stack):
 
             # Storage Virtual Machine — NFS 접근 entry point
             self.ontap_svm = fsx.CfnStorageVirtualMachine(
-                self, "OntapSvm",
+                self,
+                "OntapSvm",
                 file_system_id=self.ontap.ref,
                 name="edasvm",
                 root_volume_security_style="UNIX",
@@ -352,17 +370,23 @@ class StorageStack(Stack):
             #   fsxn_work     4 TiB
             #   fsxn_scratch  4 TiB
             self.ontap_vol_tools = self._create_ontap_volume(
-                "OntapVolTools", "fsxn_tools", "/fsxn_tools",
+                "OntapVolTools",
+                "fsxn_tools",
+                "/fsxn_tools",
                 svm_id=self.ontap_svm.attr_storage_virtual_machine_id,
                 size_gib=1024,
             )
             self.ontap_vol_work = self._create_ontap_volume(
-                "OntapVolWork", "fsxn_work", "/fsxn_work",
+                "OntapVolWork",
+                "fsxn_work",
+                "/fsxn_work",
                 svm_id=self.ontap_svm.attr_storage_virtual_machine_id,
                 size_gib=4096,
             )
             self.ontap_vol_scratch = self._create_ontap_volume(
-                "OntapVolScratch", "fsxn_scratch", "/fsxn_scratch",
+                "OntapVolScratch",
+                "fsxn_scratch",
+                "/fsxn_scratch",
                 svm_id=self.ontap_svm.attr_storage_virtual_machine_id,
                 size_gib=4096,
             )
@@ -370,18 +394,57 @@ class StorageStack(Stack):
             self._add_ontap_alarms(self.ontap.ref, alarm_topic)
 
             CfnOutput(self, "OntapFsId", value=self.ontap.ref)
-            CfnOutput(self, "OntapSvmId",
-                      value=self.ontap_svm.attr_storage_virtual_machine_id)
+            CfnOutput(
+                self, "OntapSvmId", value=self.ontap_svm.attr_storage_virtual_machine_id
+            )
+            ontap_svm_lookup = cr.AwsCustomResource(
+                self,
+                "OntapSvmNfsEndpointLookup",
+                on_update=cr.AwsSdkCall(
+                    service="FSx",
+                    action="describeStorageVirtualMachines",
+                    parameters={
+                        "StorageVirtualMachineIds": [
+                            self.ontap_svm.attr_storage_virtual_machine_id
+                        ]
+                    },
+                    physical_resource_id=cr.PhysicalResourceId.of(
+                        self.ontap_svm.attr_storage_virtual_machine_id
+                    ),
+                ),
+                policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
+                    resources=cr.AwsCustomResourcePolicy.ANY_RESOURCE
+                ),
+            )
+            ontap_svm_nfs_dns = ontap_svm_lookup.get_response_field(
+                "StorageVirtualMachines.0.Endpoints.Nfs.DNSName"
+            )
+            CfnOutput(
+                self,
+                "OntapSvmNfsDns",
+                value=ontap_svm_nfs_dns,
+                export_name=foundation_export_name(
+                    self.node,
+                    "storage",
+                    "OntapSvmNfsDns",
+                ),
+            )
             CfnOutput(self, "OntapVolToolsId", value=self.ontap_vol_tools.ref)
             CfnOutput(self, "OntapVolWorkId", value=self.ontap_vol_work.ref)
             CfnOutput(self, "OntapVolScratchId", value=self.ontap_vol_scratch.ref)
-            CfnOutput(self, "OntapAdminSecretArn",
-                      value=ontap_admin_secret.secret_arn)
+            CfnOutput(self, "OntapAdminSecretArn", value=ontap_admin_secret.secret_arn)
 
             ssm.StringParameter(
-                self, "SsmOntapSvmId",
+                self,
+                "SsmOntapSvmId",
                 parameter_name=ssm_path(self.node, "storage/OntapSvmId"),
                 string_value=self.ontap_svm.attr_storage_virtual_machine_id,
+            )
+            ssm.StringParameter(
+                self,
+                "SsmOntapSvmNfsDns",
+                parameter_name=ssm_path(self.node, "storage/OntapSvmNfsDns"),
+                string_value=ontap_svm_nfs_dns,
             )
             for name, vol in {
                 "OntapVolToolsId": self.ontap_vol_tools,
@@ -389,7 +452,8 @@ class StorageStack(Stack):
                 "OntapVolScratchId": self.ontap_vol_scratch,
             }.items():
                 ssm.StringParameter(
-                    self, f"Ssm{name}",
+                    self,
+                    f"Ssm{name}",
                     parameter_name=ssm_path(self.node, f"storage/{name}"),
                     string_value=vol.ref,
                 )
@@ -411,7 +475,8 @@ class StorageStack(Stack):
         reservation_gib: int,
     ) -> fsx.CfnVolume:
         vol = fsx.CfnVolume(
-            self, construct_id,
+            self,
+            construct_id,
             name=name,
             volume_type="OPENZFS",
             open_zfs_configuration=fsx.CfnVolume.OpenZFSConfigurationProperty(
@@ -440,17 +505,30 @@ class StorageStack(Stack):
 
     def _add_openzfs_alarms(self, fs_id: str, topic: sns.ITopic) -> None:
         for metric_name, threshold, op in [
-            ("NetworkThroughputUtilization", 50,
-             cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            ("CPUUtilization", 50,
-             cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            ("MemoryUtilization", 50,
-             cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            ("FileServerCacheHitRatio", 70,
-             cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD),
+            (
+                "NetworkThroughputUtilization",
+                50,
+                cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            ),
+            (
+                "CPUUtilization",
+                50,
+                cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            ),
+            (
+                "MemoryUtilization",
+                50,
+                cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            ),
+            (
+                "FileServerCacheHitRatio",
+                70,
+                cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            ),
         ]:
             alarm = cloudwatch.Alarm(
-                self, f"OzFsx{metric_name}",
+                self,
+                f"OzFsx{metric_name}",
                 metric=cloudwatch.Metric(
                     namespace="AWS/FSx",
                     metric_name=metric_name,
@@ -478,7 +556,8 @@ class StorageStack(Stack):
         size_gib: int,
     ) -> fsx.CfnVolume:
         vol = fsx.CfnVolume(
-            self, construct_id,
+            self,
+            construct_id,
             name=name,
             volume_type="ONTAP",
             ontap_configuration=fsx.CfnVolume.OntapConfigurationProperty(
@@ -501,15 +580,25 @@ class StorageStack(Stack):
 
     def _add_ontap_alarms(self, fs_id: str, topic: sns.ITopic) -> None:
         for metric_name, threshold, op in [
-            ("NetworkThroughputUtilization", 50,
-             cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            ("CPUUtilization", 50,
-             cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
-            ("StorageCapacityUtilization", 80,
-             cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
+            (
+                "NetworkThroughputUtilization",
+                50,
+                cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            ),
+            (
+                "CPUUtilization",
+                50,
+                cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            ),
+            (
+                "StorageCapacityUtilization",
+                80,
+                cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            ),
         ]:
             alarm = cloudwatch.Alarm(
-                self, f"OntapFsx{metric_name}",
+                self,
+                f"OntapFsx{metric_name}",
                 metric=cloudwatch.Metric(
                     namespace="AWS/FSx",
                     metric_name=metric_name,

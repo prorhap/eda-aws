@@ -53,11 +53,10 @@ from aws_cdk import (
     CfnOutput,
 )
 from constructs import Construct
-from cdk.naming import resource_prefix, ssm_path
+from cdk.naming import foundation_export_name, resource_prefix, ssm_path
 
 
 class LicenseServerStack(Stack):
-
     def __init__(
         self,
         scope: Construct,
@@ -86,7 +85,8 @@ class LicenseServerStack(Stack):
 
         # ── Security Group ────────────────────────────────────
         self.sg_license = ec2.SecurityGroup(
-            self, "SgLicenseServer",
+            self,
+            "SgLicenseServer",
             vpc=vpc,
             description="EDA license server",
             allow_all_outbound=True,
@@ -118,14 +118,16 @@ class LicenseServerStack(Stack):
             or f"{prefix}-license-key-{Stack.of(self).account}"
         )
         self.key_pair = ec2.KeyPair(
-            self, "LicenseKeyPair",
+            self,
+            "LicenseKeyPair",
             key_pair_name=key_pair_name,
             type=ec2.KeyPairType.RSA,
         )
 
         # ── IAM Role ──────────────────────────────────────────
         role = iam.Role(
-            self, "LicenseInstanceRole",
+            self,
+            "LicenseInstanceRole",
             assumed_by=iam.ServicePrincipal("ec2.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name(
@@ -138,14 +140,16 @@ class LicenseServerStack(Stack):
         )
 
         instance_profile = iam.CfnInstanceProfile(
-            self, "LicenseInstanceProfile",
+            self,
+            "LicenseInstanceProfile",
             roles=[role.role_name],
         )
 
         # ── Static ENI (MAC/IP 영속성) ───────────────────────
         # EC2 교체해도 ENI만 detach → 새 instance에 attach 하면 MAC 유지
         self.eni = ec2.CfnNetworkInterface(
-            self, "LicenseEni",
+            self,
+            "LicenseEni",
             subnet_id=primary_subnet.subnet_id,
             description="EDA license server static ENI (MAC persistence)",
             group_set=[self.sg_license.security_group_id],
@@ -161,7 +165,8 @@ class LicenseServerStack(Stack):
 
         # ── EC2 Instance (network_interfaces로 ENI attach) ──
         self.instance = ec2.CfnInstance(
-            self, "LicenseInstance",
+            self,
+            "LicenseInstance",
             instance_type=instance_type,
             image_id=rhel8.get_image(self).image_id,
             iam_instance_profile=instance_profile.ref,
@@ -197,14 +202,34 @@ class LicenseServerStack(Stack):
         CfnOutput(self, "LicenseInstanceId", value=self.instance.ref)
         CfnOutput(self, "LicenseEniId", value=self.eni.ref)
         CfnOutput(
-            self, "LicensePrivateIp",
+            self,
+            "LicensePrivateIp",
             value=self.eni.attr_primary_private_ip_address,
             description=f"Use: export LM_LICENSE_FILE={manager_port}@<this-ip>",
         )
-        CfnOutput(self, "LicenseManagerPort", value=str(manager_port))
-        CfnOutput(self, "LicenseVendorPort", value=str(vendor_port))
         CfnOutput(
-            self, "LicenseMacHint",
+            self,
+            "LicenseManagerPort",
+            value=str(manager_port),
+            export_name=foundation_export_name(
+                self.node,
+                "license",
+                "LicenseManagerPort",
+            ),
+        )
+        CfnOutput(
+            self,
+            "LicenseVendorPort",
+            value=str(vendor_port),
+            export_name=foundation_export_name(
+                self.node,
+                "license",
+                "LicenseVendorPort",
+            ),
+        )
+        CfnOutput(
+            self,
+            "LicenseMacHint",
             value=(
                 "Run: aws ec2 describe-network-interfaces "
                 "--network-interface-ids <LicenseEniId> "
@@ -214,11 +239,21 @@ class LicenseServerStack(Stack):
         )
         CfnOutput(self, "LicenseKeyPairName", value=self.key_pair.key_pair_name)
         CfnOutput(
-            self, "LicenseKeyPairId",
+            self,
+            "LicenseKeyPairId",
             value=self.key_pair.key_pair_id,
             description="aws ssm get-parameter --name /ec2/keypair/<this> --with-decryption",
         )
-        CfnOutput(self, "LicenseSgId", value=self.sg_license.security_group_id)
+        CfnOutput(
+            self,
+            "LicenseSgId",
+            value=self.sg_license.security_group_id,
+            export_name=foundation_export_name(
+                self.node,
+                "license",
+                "LicenseSgId",
+            ),
+        )
 
         # ── SSM Parameters ──────────────────────────────────
         for name, value in {
@@ -230,7 +265,8 @@ class LicenseServerStack(Stack):
             "VendorPort": str(vendor_port),
         }.items():
             ssm.StringParameter(
-                self, f"SsmLicense{name}",
+                self,
+                f"SsmLicense{name}",
                 parameter_name=ssm_path(self.node, f"license/{name}"),
                 string_value=value,
             )

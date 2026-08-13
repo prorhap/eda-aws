@@ -2,9 +2,9 @@
 
 # EDA on AWS
 
-A project for building an EDA (simulation/regression) environment on AWS using
-ParallelCluster + FSx OpenZFS. (Default region: `ap-northeast-2` — configurable
-via `config/default.env`)
+A project for building an EDA simulation/regression environment with FSx
+OpenZFS and Slurm. It supports the existing AWS ParallelCluster workflow and
+an independent AWS PCS deployment option. Default region: `ap-northeast-2`.
 
 ---
 
@@ -14,10 +14,13 @@ via `config/default.env`)
   FSx OpenZFS/ONTAP, EDA license server, VPC endpoints, CloudTrail, and more
 - **ParallelCluster 3.15.x**: Deploys Slurm head node + compute fleet on top of
   the resources created by CDK
+- **AWS PCS option**: Deploys an AWS-managed Slurm control plane and PCS
+  Compute Node Groups
 - **VPC**: Reuses an existing VPC/private subnet (assumes a site-to-site VPN
   environment)
 - **Detailed design docs**: [`architecture_guide.md`](architecture_guide.md) /
   [`parallel_cluster_configuration.md`](parallel_cluster_configuration.md)
+- **Independent PCS guide**: [`pcs/README.md`](pcs/README.md)
 
 ### CloudFormation stacks deployed
 
@@ -29,9 +32,14 @@ Stack names are based on a prefix. Default `STACK_PREFIX=Eda`.
 | `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` volumes) or FSx ONTAP |
 | `{prefix}LicenseServer` | Always-deployed EC2 + static ENI for the EDA license server (MAC address persistence) |
 | `hpc-cluster` | ParallelCluster (Slurm) stack (created by the pcluster CLI) |
+| `{prefix}Pcs` | Optional AWS PCS cluster, login/compute CNGs, and queue |
+
+Use `setup.sh` for ParallelCluster and `pcs/pcs-setup.sh` for PCS. The two paths
+do not share cluster configuration, AMIs, CLIs, or lifecycle ownership.
 
 For multiple environments in one account, set a unique `STACK_PREFIX` and
-`CLUSTER_NAME` for each. Physical names and SSM paths are prefix-scoped.
+either ParallelCluster `CLUSTER_NAME` or PCS `PCS_CLUSTER_NAME` for each.
+Physical names and SSM paths are prefix-scoped.
 `STACK_PREFIX` must start with a letter, contain only letters, digits, or
 hyphens, and be at most 48 characters.
 
@@ -476,6 +484,11 @@ eda-aws/
 │   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA license server
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
+├── pcs/                        # Independent AWS PCS CDK and deployment path
+│   ├── pcs-setup.sh
+│   ├── pcs/stack.py
+│   ├── scripts/preflight.py
+│   └── README.md
 ├── architecture_guide.md       # Overall architecture design
 └── parallel_cluster_configuration.md   # ParallelCluster environment and configuration guide
 ```

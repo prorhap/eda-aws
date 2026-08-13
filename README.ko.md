@@ -2,8 +2,9 @@
 
 # EDA on AWS
 
-AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS로
-구성하는 프로젝트입니다. (기본 리전: `ap-northeast-2` — `config/default.env`에서 변경 가능)
+AWS 위에서 EDA(simulation/regression) 환경을 FSx OpenZFS와 Slurm으로
+구성하는 프로젝트입니다. 클러스터 배포 모델은 기존 AWS ParallelCluster와
+별도 AWS PCS 옵션을 제공합니다. (기본 리전: `ap-northeast-2`)
 
 ---
 
@@ -12,9 +13,11 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 - **CDK (Python 3.12, aws-cdk-lib 2.x)**: VPC import, 보안그룹, FSx OpenZFS/ONTAP,
   EDA 라이센스 서버, VPC endpoints, CloudTrail 등을 배포
 - **ParallelCluster 3.15.x**: CDK가 만든 리소스 위에 Slurm head node + compute fleet 배포
+- **AWS PCS 옵션**: AWS 관리 Slurm control plane + PCS Compute Node Groups 배포
 - **VPC**: 기존 VPC/Private subnet을 재사용 (사이트간 VPN 환경 전제)
 - **상세 설계 문서**: [`architecture_guide.md`](architecture_guide.ko.md) /
   [`parallel_cluster_configuration.md`](parallel_cluster_configuration.ko.md)
+- **PCS 독립 배포 가이드**: [`pcs/README.ko.md`](pcs/README.ko.md)
 
 ### 배포되는 CloudFormation 스택
 
@@ -26,9 +29,14 @@ AWS 위에서 EDA(simulation/regression) 환경을 ParallelCluster + FSx OpenZFS
 | `{prefix}Storage` | FSx OpenZFS (+ `fsxz_tools`, `fsxz_work`, `fsxz_scratch` 볼륨) 또는 FSx ONTAP |
 | `{prefix}LicenseServer` | 항상 배포되는 EDA 라이센스 서버용 EC2 + static ENI (MAC 영속성) |
 | `hpc-cluster` | ParallelCluster (Slurm) 스택 (pcluster CLI가 생성) |
+| `{prefix}Pcs` | 선택 사항: AWS PCS cluster + login/compute CNG + queue |
 
-같은 계정에 여러 환경을 둘 때는 `STACK_PREFIX`와 `CLUSTER_NAME`을 환경별로
-다르게 설정합니다. 물리 리소스 이름과 SSM 경로도 prefix별로 격리됩니다.
+ParallelCluster는 `setup.sh`, PCS는 `pcs/pcs-setup.sh`를 사용합니다. 두 경로는
+클러스터 정의, AMI, CLI, 수명주기를 공유하지 않습니다.
+
+같은 계정에 여러 환경을 둘 때는 `STACK_PREFIX`와 ParallelCluster의
+`CLUSTER_NAME` 또는 PCS의 `PCS_CLUSTER_NAME`을 환경별로 다르게 설정합니다.
+물리 리소스 이름과 SSM 경로도 prefix별로 격리됩니다.
 `STACK_PREFIX`는 영문자로 시작하고 영문자·숫자·하이픈만 사용할 수 있으며
 최대 48자입니다.
 
@@ -456,6 +464,11 @@ eda-aws/
 │   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA 라이선스 서버
 │   ├── pcluster-config-template.yaml
 │   └── requirements.txt
+├── pcs/                        # 독립 AWS PCS CDK/검증/배포 경로
+│   ├── pcs-setup.sh
+│   ├── pcs/stack.py
+│   ├── scripts/preflight.py
+│   └── README.ko.md
 ├── architecture_guide.md       # 전체 아키텍처 설계
 └── parallel_cluster_configuration.md   # ParallelCluster 환경 구성 및 설정 가이드
 ```

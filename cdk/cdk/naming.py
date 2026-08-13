@@ -19,3 +19,8 @@ def resource_prefix(node) -> str:
 
 def ssm_path(node, suffix: str) -> str:
     return f"/{resource_prefix(node)}/{suffix.lstrip('/')}"
+
+
+def foundation_export_name(node, component: str, output_name: str) -> str:
+    """Return a stable CloudFormation Export name for shared Foundation values."""
+    return f"{resource_prefix(node)}:{component}:{output_name}"

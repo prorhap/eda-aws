@@ -76,11 +76,15 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
     volumes = template.find_resources("AWS::FSx::Volume")
     assert len(volumes) == 3
     assert all(
-        resource["Properties"]["OpenZFSConfiguration"][
-            "StorageCapacityQuotaGiB"
-        ]
+        resource["Properties"]["OpenZFSConfiguration"]["StorageCapacityQuotaGiB"]
         <= 32768
         for resource in volumes.values()
+    )
+    template.has_output(
+        "OpenZfsDns",
+        {
+            "Export": {"Name": "eda:storage:OpenZfsDns"},
+        },
     )
 
 
@@ -215,6 +219,11 @@ def test_ontap_secret_uses_generated_name_for_reinstall():
     secrets = template.find_resources("AWS::SecretsManager::Secret")
     assert len(secrets) == 1
     assert "Name" not in next(iter(secrets.values()))["Properties"]
+    template.has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/eda/storage/OntapSvmNfsDns"},
+    )
+    template.resource_count_is("Custom::AWS", 1)
 
 
 def test_license_server_uses_private_static_network_interface(monkeypatch):
@@ -264,7 +273,7 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
                         "Ref": assertions.Match.any_value(),
                     },
                 }
-            ]
+            ],
         },
     )
 
@@ -281,9 +290,7 @@ def test_license_server_uses_private_static_network_interface(monkeypatch):
         )
 
     allowed_description_chars = set(
-        string.ascii_letters
-        + string.digits
-        + ". _-:/()#,@[]+=&;{}!$*"
+        string.ascii_letters + string.digits + ". _-:/()#,@[]+=&;{}!$*"
     )
     assert ingress_descriptions
     assert all(
