@@ -80,8 +80,9 @@ cdk destroy --all -c eda:vpc_id=... -c eda:subnet_id=...
 ```
 
 Outputs는 `cdk deploy --outputs-file outputs.json` 으로 받고, setup.sh는 이 값을
-`pcluster-config-template.yaml`의 중립 placeholder(`${BASE.*}`, `${STORAGE.*}`)에
-주입해 `pcluster-config.yaml`을 생성합니다.
+저장소 루트의 `pcluster/pcluster-config-template.yaml`에 있는 중립
+placeholder(`${BASE.*}`, `${STORAGE.*}`)에 주입해
+`pcluster/pcluster-config.yaml`을 생성합니다.
 
 ---
 

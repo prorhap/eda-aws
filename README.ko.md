@@ -172,7 +172,7 @@ setup.sh 단계:
 2. CDK Python deps 설치
 3. pcluster CLI 설치
 4. CDK bootstrap + 스택 배포 (`{prefix}Base` → storage / license 병렬)
-5. `pcluster-config.yaml` 자동 생성 + SSH key 다운로드 (`~/.ssh/*.pem`)
+5. `pcluster/pcluster-config.yaml` 자동 생성 + SSH key 다운로드 (`~/.ssh/*.pem`)
 6. `pcluster create-cluster` 실행 + 완료까지 모니터링 (10–15분)
 
 ### 주요 config 플래그 (`config/default.env`)
@@ -305,7 +305,7 @@ ssh -i ~/.ssh/eda-license-key-<ACCOUNT>.pem ec2-user@<LICENSE_IP>
 export LM_LICENSE_FILE=<LICENSE_MANAGER_PORT>@<LICENSE_IP>
 ```
 
-License Host ID는 `pcluster-config.yaml` 생성 시 setup.sh가 출력하는
+License Host ID는 `pcluster/pcluster-config.yaml` 생성 시 setup.sh가 출력하는
 License Server MAC address를 사용합니다.
 
 **SSH 22 포트 정책**: License 서버 SG는 Head Node와 동일하게 `0.0.0.0/0`에서
@@ -462,8 +462,10 @@ eda-aws/
 │   │   ├── base_stack.py            # {prefix}Base: SG + KeyPair + CloudTrail + VPC endpoints
 │   │   ├── storage_stack.py         # {prefix}Storage: FSx OpenZFS / ONTAP
 │   │   └── license_server_stack.py  # {prefix}LicenseServer: EDA 라이선스 서버
-│   ├── pcluster-config-template.yaml
 │   └── requirements.txt
+├── pcluster/                   # AWS ParallelCluster 설정
+│   ├── pcluster-config-template.yaml
+│   └── pcluster-config.yaml    # setup.sh 생성, Git 제외
 ├── pcs/                        # 독립 AWS PCS CDK/검증/배포 경로
 │   ├── pcs-setup.sh
 │   ├── pcs/stack.py

@@ -37,7 +37,7 @@ Stack name override (각 스택 이름을 개별로 바꾸고 싶을 때):
   eda:license_stack_name      str  (default: "{prefix}LicenseServer")
 
 After deployment, use the CfnOutputs to fill in the ParallelCluster config.
-See pcluster-config-template.yaml for a ready-to-use template.
+See pcluster/pcluster-config-template.yaml at the repository root.
 """
 
 import os

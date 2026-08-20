@@ -83,8 +83,9 @@ cdk destroy --all -c eda:vpc_id=... -c eda:subnet_id=...
 
 Outputs are produced via `cdk deploy --outputs-file outputs.json`. setup.sh
 injects these values into the neutral placeholders (`${BASE.*}`,
-`${STORAGE.*}`) of `pcluster-config-template.yaml` to generate
-`pcluster-config.yaml`.
+`${STORAGE.*}`) in the repository-root
+`pcluster/pcluster-config-template.yaml` to generate
+`pcluster/pcluster-config.yaml`.
 
 ---
 

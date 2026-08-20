@@ -70,6 +70,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CDK_DIR="${PROJECT_DIR}/cdk"
+PCLUSTER_DIR="${PROJECT_DIR}/pcluster"
 PCLUSTER_VENV="${PROJECT_DIR}/.pcluster-venv"
 PCLUSTER="${PCLUSTER_VENV}/bin/pcluster"
 PCLUSTER_VERSION_SERIES="3.15"
@@ -558,7 +559,7 @@ else
     || error "VPC ${VPC_ID} must have DNS hostnames (enableDnsHostnames) enabled."
 
   # ── Validate required EC2 instance types in the selected single AZ ──
-  REQUIRED_INSTANCE_TYPES=("m7i.xlarge" "x8aedz.24xlarge")
+  REQUIRED_INSTANCE_TYPES=("m7i.2xlarge" "x8aedz.24xlarge")
   if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
     REQUIRED_INSTANCE_TYPES+=("${LOGIN_NODE_INSTANCE_TYPE}")
   fi
@@ -596,7 +597,7 @@ else
     aws ec2 describe-instance-types --region "${REGION}" \
     --instance-types "${UNIQUE_REQUIRED_INSTANCE_TYPES[@]}" \
     --query 'InstanceTypes[].[InstanceType,VCpuInfo.DefaultVCpus]' --output text
-  HEAD_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "m7i.xlarge" {print $2; exit}')
+  HEAD_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "m7i.2xlarge" {print $2; exit}')
   COMPUTE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk '$1 == "x8aedz.24xlarge" {print $2; exit}')
   LICENSE_VCPUS=$(echo "${INSTANCE_VCPU_DATA}" | awk -v type="${LICENSE_INSTANCE_TYPE}" '$1 == type {print $2; exit}')
   [[ "${HEAD_VCPUS}" =~ ^[0-9]+$ && "${COMPUTE_VCPUS}" =~ ^[0-9]+$ && "${LICENSE_VCPUS}" =~ ^[0-9]+$ ]] \
@@ -815,8 +816,8 @@ step "5/6  Generate ParallelCluster Configuration"
 # ══════════════════════════════════════════════════════════════
 
 OUTPUTS="${CDK_DIR}/outputs.json"
-TEMPLATE="${CDK_DIR}/pcluster-config-template.yaml"
-CONFIG="${CDK_DIR}/pcluster-config.yaml"
+TEMPLATE="${PCLUSTER_DIR}/pcluster-config-template.yaml"
+CONFIG="${PCLUSTER_DIR}/pcluster-config.yaml"
 
 SUBNET_ID=$(jq -r --arg s "${BASE_STACK}" '.[$s].PrimarySubnetId' "${OUTPUTS}")
 SG_CLUSTER=$(jq -r --arg s "${BASE_STACK}" '.[$s].SgClusterNodesId' "${OUTPUTS}")
@@ -833,7 +834,7 @@ done
 aws_capture CONFIG_SUBNET_AZ "Generated config subnet Availability Zone lookup" \
   aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}" \
   --query 'Subnets[0].AvailabilityZone' --output text
-CONFIG_REQUIRED_INSTANCE_TYPES=("m7i.xlarge" "x8aedz.24xlarge")
+CONFIG_REQUIRED_INSTANCE_TYPES=("m7i.2xlarge" "x8aedz.24xlarge")
 if [[ "${ENABLE_LOGIN_NODE}" == "1" ]]; then
   CONFIG_REQUIRED_INSTANCE_TYPES+=("${LOGIN_NODE_INSTANCE_TYPE}")
 fi

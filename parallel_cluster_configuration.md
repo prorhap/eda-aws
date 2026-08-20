@@ -17,7 +17,7 @@ Running `setup.sh` produces the following environment end-to-end:
 
 | Node | Instance type | Count | Role |
 |---|---|---|---|
-| Head Node | `m7i.xlarge` | 1 (always on) | Slurm controller, job scheduler |
+| Head Node | `m7i.2xlarge` | 1 (always on) | Slurm controller, job scheduler |
 | Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 (pool) | `r7i.2xlarge` normally; `g6.4xlarge` with DCV |
 | Compute Node | `x8aedz.24xlarge` | 0–2 (auto scale) | PowerArtist scratch, simulation / regression workload |
 
@@ -118,8 +118,8 @@ CloudWatch monitoring is enabled by default:
 ## 2. pcluster-config-template.yaml structure
 
 `setup.sh` fills the placeholder values in
-`cdk/pcluster-config-template.yaml` from `cdk/outputs.json` to produce
-`cdk/pcluster-config.yaml`. Understanding the template helps when you need to
+`pcluster/pcluster-config-template.yaml` from `cdk/outputs.json` to produce
+`pcluster/pcluster-config.yaml`. Understanding the template helps when you need to
 make manual changes.
 
 ### 2.1 Placeholder substitution
@@ -152,7 +152,7 @@ flags:
 
 ```yaml
 HeadNode:
-  InstanceType: m7i.xlarge          # change here to resize the head node
+  InstanceType: m7i.2xlarge         # change here to resize the head node
   LocalStorage:
     RootVolume:
       Size: 500                     # GiB — increase if /var fills up
@@ -189,7 +189,7 @@ Scheduling:
 
 ### 3.1 Changing cluster-level settings (instance type, node count, etc.)
 
-Edit `cdk/pcluster-config-template.yaml`, then regenerate the config and apply:
+Edit `pcluster/pcluster-config-template.yaml`, then regenerate the config and apply:
 
 ```bash
 # Regenerate pcluster-config.yaml from the updated template
@@ -199,7 +199,7 @@ SKIP_CDK=1 SKIP_CLUSTER=1 ./setup.sh
 export CLUSTER_NAME="hpc-cluster"
 pcluster update-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration cdk/pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 ```
 
 Not all fields can be changed while the cluster is running. ParallelCluster
@@ -207,7 +207,8 @@ will report which changes require deleting and recreating the cluster.
 
 ### 3.2 Changing compute node instance type or count
 
-In `pcluster-config-template.yaml`, under `SlurmQueues[0].ComputeResources`:
+In `pcluster/pcluster-config-template.yaml`, under
+`SlurmQueues[0].ComputeResources`:
 
 ```yaml
 ComputeResources:
@@ -397,7 +398,7 @@ pcluster describe-image \
 
 ### 4.3 Apply the custom AMI to the cluster
 
-In `cdk/pcluster-config-template.yaml`, replace the `Image` section:
+In `pcluster/pcluster-config-template.yaml`, replace the `Image` section:
 
 ```yaml
 # Before (stock AMI)
@@ -439,7 +440,7 @@ pcluster update-compute-fleet \
 # 2. Update the cluster configuration (triggers head node replacement)
 pcluster update-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration cdk/pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 
 # 3. Monitor the update
 pcluster describe-cluster --cluster-name $CLUSTER_NAME \
@@ -502,7 +503,7 @@ Creation takes about **10–15 minutes**, and the script waits until completion.
 ```bash
 pcluster create-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration cdk/pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 ```
 
 ### 4.3 Monitor status
@@ -796,7 +797,7 @@ When config changes:
 ```bash
 pcluster update-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 ```
 
 ### 9.2 Stop / start the cluster

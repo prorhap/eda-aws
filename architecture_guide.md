@@ -41,7 +41,7 @@ flowchart LR
         subgraph VPC["Existing VPC (import)"]
             subgraph PRIVATE["Existing Private Subnet"]
                 LOGIN["Login Node<br/>r7i.2xlarge or g6.4xlarge<br/>SSH + Verdi + DCV"]
-                HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld"]
+                HEAD["Head Node<br/>m7i.2xlarge<br/>Slurm ctld"]
                 C1["Compute<br/>x8aedz.24xlarge<br/>7.6 TB local NVMe"]
                 C2["Compute<br/>x8aedz.24xlarge<br/>7.6 TB local NVMe"]
 
@@ -84,7 +84,7 @@ Node's Slurm automatically provisions Compute Nodes.
 
 | Role | Instance | Count | Use |
 |---|---|---:|---|
-| Head Node | `m7i.xlarge` | 1 | Slurm controller |
+| Head Node | `m7i.2xlarge` | 1 | Slurm controller |
 | Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 | `r7i.2xlarge` normally; `g6.4xlarge` with DCV |
 | Compute | `x8aedz.24xlarge` | 0–2 | PowerArtist scratch, VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
 
@@ -393,7 +393,7 @@ AWS Console.
 
 | Role | Instance | Count |
 |---|---|---:|
-| Head Node | `m7i.xlarge` | 1 |
+| Head Node | `m7i.2xlarge` | 1 |
 | Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 |
 | Compute | `x8aedz.24xlarge` | 0–2 |
 | License server (required) | `m7i.large` | 1 |

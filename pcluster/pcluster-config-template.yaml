@@ -17,7 +17,7 @@ Image:
   Os: rhel8
 
 HeadNode:
-  InstanceType: m7i.xlarge
+  InstanceType: m7i.2xlarge
   Ssh:
     KeyName: ${BASE.KeyPairName}
   Networking:

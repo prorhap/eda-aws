@@ -40,7 +40,7 @@ flowchart LR
         subgraph VPC["기존 VPC (import)"]
             subgraph PRIVATE["기존 Private Subnet"]
                 LOGIN["Login Node<br/>r7i.2xlarge 또는 g6.4xlarge<br/>SSH + Verdi + DCV"]
-                HEAD["Head Node<br/>m7i.xlarge<br/>Slurm ctld"]
+                HEAD["Head Node<br/>m7i.2xlarge<br/>Slurm ctld"]
                 C1["Compute<br/>x8aedz.24xlarge<br/>로컬 NVMe 7.6 TB"]
                 C2["Compute<br/>x8aedz.24xlarge<br/>로컬 NVMe 7.6 TB"]
 
@@ -81,7 +81,7 @@ flowchart LR
 
 | 역할 | 인스턴스 | 수량 | 용도 |
 |---|---|---:|---|
-| Head Node | `m7i.xlarge` | 1 | Slurm controller |
+| Head Node | `m7i.2xlarge` | 1 | Slurm controller |
 | Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 | 기본 `r7i.2xlarge`; DCV 활성화 시 `g6.4xlarge` |
 | Compute | `x8aedz.24xlarge` | 0~2 | PowerArtist scratch, VCS simulation / regression (`MinCount=0`, `MaxCount=2`) |
 
@@ -377,7 +377,7 @@ ParallelCluster 기본 동작(Head Node `/home` 공유)을 그대로 사용합�
 
 | 역할 | 인스턴스 | 수량 |
 |---|---|---:|
-| Head Node | `m7i.xlarge` | 1 |
+| Head Node | `m7i.2xlarge` | 1 |
 | Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 |
 | Compute | `x8aedz.24xlarge` | 0~2 |
 | License Server (필수) | `m7i.large` | 1 |

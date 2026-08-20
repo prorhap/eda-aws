@@ -16,7 +16,7 @@
 
 | 노드 | 인스턴스 타입 | 수량 | 역할 |
 |---|---|---|---|
-| Head Node | `m7i.xlarge` | 1 (상시 가동) | Slurm 컨트롤러, 잡 스케줄러 |
+| Head Node | `m7i.2xlarge` | 1 (상시 가동) | Slurm 컨트롤러, 잡 스케줄러 |
 | Login Node | `r7i.2xlarge` / `g6.4xlarge` | 1 (풀) | 기본 `r7i.2xlarge`; DCV 활성화 시 `g6.4xlarge` |
 | Compute Node | `x8aedz.24xlarge` | 0–2 (자동 증감) | PowerArtist scratch, 시뮬레이션 / 리그레션 워크로드 |
 
@@ -114,8 +114,8 @@ CloudWatch 모니터링은 기본으로 활성화된다.
 
 ## 2. pcluster-config-template.yaml 구조 이해
 
-`setup.sh`는 `cdk/pcluster-config-template.yaml`의 플레이스홀더를
-`cdk/outputs.json`의 값으로 치환하여 `cdk/pcluster-config.yaml`을 생성한다.
+`setup.sh`는 `pcluster/pcluster-config-template.yaml`의 플레이스홀더를
+`cdk/outputs.json`의 값으로 치환하여 `pcluster/pcluster-config.yaml`을 생성한다.
 수동으로 변경이 필요할 때 템플릿 구조를 이해하면 도움이 된다.
 
 ### 2.1 플레이스홀더 치환
@@ -147,7 +147,7 @@ CloudWatch 모니터링은 기본으로 활성화된다.
 
 ```yaml
 HeadNode:
-  InstanceType: m7i.xlarge          # Head Node 크기 변경 시 여기 수정
+  InstanceType: m7i.2xlarge         # Head Node 크기 변경 시 여기 수정
   LocalStorage:
     RootVolume:
       Size: 500                     # GiB — /var가 꽉 찰 경우 늘리기
@@ -184,7 +184,7 @@ Scheduling:
 
 ### 3.1 인스턴스 타입, 노드 수 등 클러스터 레벨 설정 변경
 
-`cdk/pcluster-config-template.yaml`을 수정한 뒤 config를 재생성하고 적용한다.
+`pcluster/pcluster-config-template.yaml`을 수정한 뒤 config를 재생성하고 적용한다.
 
 ```bash
 # 수정된 템플릿으로 pcluster-config.yaml 재생성
@@ -194,7 +194,7 @@ SKIP_CDK=1 SKIP_CLUSTER=1 ./setup.sh
 export CLUSTER_NAME="hpc-cluster"
 pcluster update-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration cdk/pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 ```
 
 모든 항목이 실행 중 변경 가능하지는 않다. ParallelCluster가 클러스터 삭제 후 재생성이
@@ -202,7 +202,8 @@ pcluster update-cluster \
 
 ### 3.2 Compute 노드 인스턴스 타입 또는 수량 변경
 
-`pcluster-config-template.yaml`의 `SlurmQueues[0].ComputeResources` 아래를 수정한다.
+`pcluster/pcluster-config-template.yaml`의
+`SlurmQueues[0].ComputeResources` 아래를 수정한다.
 
 ```yaml
 ComputeResources:
@@ -386,7 +387,7 @@ pcluster describe-image \
 
 ### 4.3 Custom AMI를 클러스터 설정에 적용
 
-`cdk/pcluster-config-template.yaml`의 `Image` 섹션을 수정한다:
+`pcluster/pcluster-config-template.yaml`의 `Image` 섹션을 수정한다:
 
 ```yaml
 # 변경 전 (stock AMI)
@@ -427,7 +428,7 @@ pcluster update-compute-fleet \
 # 2. 클러스터 설정 업데이트 (Head Node 교체 트리거)
 pcluster update-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration cdk/pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 
 # 3. 업데이트 모니터링
 pcluster describe-cluster --cluster-name $CLUSTER_NAME \
@@ -488,7 +489,7 @@ SKIP_CLUSTER=1 ./setup.sh
 ```bash
 pcluster create-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration cdk/pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 ```
 
 ### 4.3 상태 모니터링
@@ -774,7 +775,7 @@ sbatch /fsxz/scratch/$USER/run_vcs.sh
 ```bash
 pcluster update-cluster \
   --cluster-name $CLUSTER_NAME \
-  --cluster-configuration pcluster-config.yaml
+  --cluster-configuration pcluster/pcluster-config.yaml
 ```
 
 ### 9.2 클러스터 중지/시작

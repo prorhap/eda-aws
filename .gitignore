@@ -23,6 +23,8 @@ __pycache__/
 **/outputs.json
 
 # ── pcluster ──────────────────────────────────
+pcluster/pcluster-config.yaml
+# Legacy generated path retained only to keep existing clones clean.
 cdk/pcluster-config.yaml
 .pcluster-venv/
 pcs/.venv/
