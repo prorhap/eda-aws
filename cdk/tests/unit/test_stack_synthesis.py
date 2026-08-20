@@ -65,10 +65,10 @@ def test_storage_stack_synthesizes_valid_default_openzfs_layout():
             "StorageCapacity": 32768,
             "OpenZFSConfiguration": {
                 "DeploymentType": "SINGLE_AZ_HA_2",
-                "ThroughputCapacity": 10240,
+                "ThroughputCapacity": 7680,
                 "DiskIopsConfiguration": {
                     "Mode": "USER_PROVISIONED",
-                    "Iops": 400000,
+                    "Iops": 300000,
                 },
             },
         },

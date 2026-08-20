@@ -104,9 +104,9 @@ The simplest and fastest configuration as the Day 1 default storage.
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (gen 2, NVMe L2ARC cache) |
 | Storage capacity | 32 TiB / 32,768 GiB (project range: 16–32 TiB) |
-| Throughput | 10,240 MBps (maximum tier) |
-| SSD IOPS | 400,000, `USER_PROVISIONED` (maximum at this tier) |
-| File-server cache | 512 GiB memory and 2,560 GiB NVMe L2ARC |
+| Throughput | 7,680 MBps (one tier below the maximum) |
+| SSD IOPS | 300,000, `USER_PROVISIONED` (below the 307,200 tier maximum) |
+| File-server cache | File-server memory and managed NVMe L2ARC |
 | Backup retention | 7 days |
 
 **Volume layout**
@@ -121,10 +121,9 @@ The setup calculates these quotas and reservations from the configured parent
 capacity. The values above are the layout produced by the 32 TiB project
 default.
 
-The 10,240 MBps / 400,000 IOPS setting consumes the default account-level
-OpenZFS throughput and disk-IOPS quotas in Seoul. It is deliberately a
-maximum-performance baseline: do not create another OpenZFS file system in the
-Region without a quota increase. [R1S-1][R1S-2]
+The 7,680 MBps / 300,000 IOPS default is one tier below the maximum. OpenZFS
+quotas apply to the aggregate of file systems in the Region, so include existing
+throughput and disk-IOPS usage when checking available quota. [R1S-1][R1S-2]
 
 ### 4.2 FSx for NetApp ONTAP (optional)
 
@@ -405,7 +404,7 @@ AWS Console.
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
 | Capacity | 32 TiB | 10 TiB |
-| Throughput / IOPS | 10,240 MBps / 400,000 | 3,072 MBps × 1 HA / Automatic |
+| Throughput / IOPS | 7,680 MBps / 300,000 | 3,072 MBps × 1 HA / Automatic |
 
 ---
 
@@ -433,8 +432,8 @@ SUBNET_ID=""       # Existing private subnet ID
 
 ENABLE_OPENZFS=1
 OPENZFS_SIZE_GIB=32768
-OPENZFS_THROUGHPUT=10240
-OPENZFS_IOPS=400000
+OPENZFS_THROUGHPUT=7680
+OPENZFS_IOPS=300000
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -462,8 +461,8 @@ applies.
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster name |
 | `ENABLE_OPENZFS` | `1` | Whether to create FSx OpenZFS |
 | `OPENZFS_SIZE_GIB` | `32768` | OpenZFS capacity (16,384 – 32,768; 16–32 TiB project range) |
-| `OPENZFS_THROUGHPUT` | `10240` | OpenZFS throughput (9 allowed values) |
-| `OPENZFS_IOPS` | `400000` | User-provisioned IOPS; at least 3 IOPS/GiB, at most the file-server tier and regional limit |
+| `OPENZFS_THROUGHPUT` | `7680` | OpenZFS throughput (9 allowed values) |
+| `OPENZFS_IOPS` | `300000` | User-provisioned IOPS; at least 3 IOPS/GiB, at most the file-server tier and regional limit |
 | `ENABLE_ONTAP` | `0` | Whether to create FSx ONTAP |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP capacity (1,024 – 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | Throughput per HA pair (1536 / 3072 / 6144) |
@@ -491,7 +490,7 @@ VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy ./setup.sh
 
 # 4) Full env override (ONTAP 2 HA + license server)
 VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy \
-  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=10240 OPENZFS_IOPS=400000 \
+  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=7680 OPENZFS_IOPS=300000 \
   ENABLE_ONTAP=1 ONTAP_HA_PAIRS=2 ONTAP_TPUT_PER_HA=6144 ONTAP_SIZE_GIB=20480 \
   ./setup.sh
 
@@ -545,7 +544,7 @@ data-transfer charges vary with usage and current Seoul Region pricing.
 
 | Cost class | Default resources |
 |---|---|
-| Always on | Head Node, Login Node, required License Server, FSx OpenZFS 32 TiB / 10,240 MBps / 400,000 IOPS, Interface VPC endpoints |
+| Always on | Head Node, Login Node, required License Server, FSx OpenZFS 32 TiB / 7,680 MBps / 300,000 IOPS, Interface VPC endpoints |
 | Usage based | `x8aedz.24xlarge` Compute Nodes (`MinCount=0`, `MaxCount=2`), backups, logs, and data transfer |
 | Optional | FSx for ONTAP and SSM Interface endpoints |
 

@@ -38,8 +38,8 @@
 #   ── Storage options ──────────────────────────────────────────────────
 #   ENABLE_OPENZFS            1 to create FSx OpenZFS (default: 1)
 #   OPENZFS_SIZE_GIB          GiB, 16384 ~ 32768 (16 ~ 32 TiB) (default config: 32768)
-#   OPENZFS_THROUGHPUT        MBps, one of 160|320|640|1280|2560|3840|5120|7680|10240 (default config: 10240)
-#   OPENZFS_IOPS              User-provisioned IOPS (default config: 400000)
+#   OPENZFS_THROUGHPUT        MBps, one of 160|320|640|1280|2560|3840|5120|7680|10240 (default config: 7680)
+#   OPENZFS_IOPS              User-provisioned IOPS (default config: 300000)
 #   ENABLE_ONTAP              1 to create FSx NetApp ONTAP (default: 0)
 #   ONTAP_SIZE_GIB            GiB, 1024 ~ 1048576 (1 PiB) (default: 10240)
 #   ONTAP_TPUT_PER_HA         MBps per HA pair, one of 1536|3072|6144 (default: 3072)
@@ -469,8 +469,8 @@ else
   ENABLE_OPENZFS="${ENABLE_OPENZFS:-1}"
   ENABLE_ONTAP="${ENABLE_ONTAP:-0}"
   OPENZFS_SIZE_GIB="${OPENZFS_SIZE_GIB:-32768}"
-  OPENZFS_THROUGHPUT="${OPENZFS_THROUGHPUT:-10240}"
-  OPENZFS_IOPS="${OPENZFS_IOPS:-400000}"
+  OPENZFS_THROUGHPUT="${OPENZFS_THROUGHPUT:-7680}"
+  OPENZFS_IOPS="${OPENZFS_IOPS:-300000}"
   ONTAP_SIZE_GIB="${ONTAP_SIZE_GIB:-10240}"
   ONTAP_TPUT_PER_HA="${ONTAP_TPUT_PER_HA:-3072}"
   ONTAP_HA_PAIRS="${ONTAP_HA_PAIRS:-1}"

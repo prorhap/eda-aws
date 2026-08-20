@@ -186,7 +186,7 @@ setup.sh stages:
 | `REGION` | `ap-northeast-2` | Deployment region |
 | `STACK_PREFIX` | `Eda` | Prefix for CDK stacks, physical resources, and SSM paths |
 | `VPC_ID` / `SUBNET_ID` | (required) | Existing VPC/private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `10240` / `400000` | FSx OpenZFS maximum-performance baseline |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `7680` / `300000` | High-performance FSx OpenZFS baseline |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | Mandatory EDA license server instance |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` defaults |
@@ -200,9 +200,10 @@ The quota/reservation of FSx OpenZFS child volumes (tools/work/scratch) is
 auto-scaled in proportion to the parent capacity (to avoid the constraint
 where a quota larger than the parent is not allowed).
 
-The default OpenZFS throughput and IOPS values consume the default regional
-quotas in Seoul. The setup preflight checks the configured quota values; request
-an increase before deploying another OpenZFS file system in the same Region.
+The default OpenZFS throughput and IOPS values are one tier below the maximum.
+The setup preflight checks the configured quota values. Before deployment, also
+verify that aggregate usage including existing OpenZFS file systems remains
+within the regional quotas.
 
 ---
 

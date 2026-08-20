@@ -101,9 +101,9 @@ Day 1 기본 스토리지로 가장 단순하고 빠른 구성입니다.
 |---|---|
 | Deployment type | `SINGLE_AZ_HA_2` (2세대, NVMe L2ARC 캐시) |
 | Storage capacity | 32 TiB / 32,768 GiB (프로젝트 범위: 16~32 TiB) |
-| Throughput | 10,240 MBps (최대 tier) |
-| SSD IOPS | 400,000, `USER_PROVISIONED` (해당 tier 최대) |
-| File server cache | 메모리 512 GiB, NVMe L2ARC 2,560 GiB |
+| Throughput | 7,680 MBps (최대 tier보다 한 단계 낮음) |
+| SSD IOPS | 300,000, `USER_PROVISIONED` (해당 tier 최대 307,200 미만) |
+| File server cache | 파일 서버 메모리와 관리형 NVMe L2ARC |
 | Backup retention | 7 days |
 
 **볼륨 구성**
@@ -117,9 +117,9 @@ Day 1 기본 스토리지로 가장 단순하고 빠른 구성입니다.
 Quota와 reservation은 설정한 부모 용량에 따라 자동 계산됩니다. 위 값은 프로젝트
 기본값인 32 TiB에서 생성되는 레이아웃입니다.
 
-10,240 MBps / 400,000 IOPS는 서울 리전의 기본 계정 OpenZFS throughput 및 disk
-IOPS quota를 모두 사용합니다. 의도적으로 최대 성능을 기준으로 한 값이므로, quota
-증설 전에는 같은 리전에 다른 OpenZFS 파일 시스템을 만들면 안 됩니다. [R1S-1][R1S-2]
+기본값 7,680 MBps / 300,000 IOPS는 최대 tier보다 한 단계 낮습니다. 다만 OpenZFS
+quota는 리전 내 파일시스템 합계에 적용되므로, 기존 파일시스템 사용량을 포함해
+throughput과 disk IOPS 여유를 확인해야 합니다. [R1S-1][R1S-2]
 
 ### 4.2 FSx for NetApp ONTAP (옵션)
 
@@ -388,7 +388,7 @@ ParallelCluster 기본 동작(Head Node `/home` 공유)을 그대로 사용합�
 |---|---|---|
 | Deployment | `SINGLE_AZ_HA_2` | `SINGLE_AZ_2` |
 | Capacity | 32 TiB | 10 TiB |
-| Throughput / IOPS | 10,240 MBps / 400,000 | 3,072 MBps × 1 HA / Automatic |
+| Throughput / IOPS | 7,680 MBps / 300,000 | 3,072 MBps × 1 HA / Automatic |
 
 ---
 
@@ -415,8 +415,8 @@ SUBNET_ID=""       # 기존 private subnet ID
 
 ENABLE_OPENZFS=1
 OPENZFS_SIZE_GIB=32768
-OPENZFS_THROUGHPUT=10240
-OPENZFS_IOPS=400000
+OPENZFS_THROUGHPUT=7680
+OPENZFS_IOPS=300000
 
 ENABLE_ONTAP=0
 LICENSE_INSTANCE_TYPE="m7i.large"
@@ -443,8 +443,8 @@ ENABLE_VPC_ENDPOINTS=1
 | `CLUSTER_NAME` | `hpc-cluster` | ParallelCluster 이름 |
 | `ENABLE_OPENZFS` | `1` | FSx OpenZFS 생성 여부 |
 | `OPENZFS_SIZE_GIB` | `32768` | OpenZFS 용량 (프로젝트 범위: 16,384 ~ 32,768 / 16~32 TiB) |
-| `OPENZFS_THROUGHPUT` | `10240` | OpenZFS throughput (9개 허용값) |
-| `OPENZFS_IOPS` | `400000` | 사용자 지정 IOPS. 최소 3 IOPS/GiB, 파일 서버 tier 및 리전 한도 이하 |
+| `OPENZFS_THROUGHPUT` | `7680` | OpenZFS throughput (9개 허용값) |
+| `OPENZFS_IOPS` | `300000` | 사용자 지정 IOPS. 최소 3 IOPS/GiB, 파일 서버 tier 및 리전 한도 이하 |
 | `ENABLE_ONTAP` | `0` | FSx ONTAP 생성 여부 |
 | `ONTAP_SIZE_GIB` | `10240` | ONTAP 용량 (1,024 ~ 1,048,576) |
 | `ONTAP_TPUT_PER_HA` | `3072` | HA pair당 throughput (1536 / 3072 / 6144) |
@@ -472,7 +472,7 @@ VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy ./setup.sh
 
 # 4) 풀 구성 env override (ONTAP 2 HA + license server)
 VPC_ID=vpc-xxx SUBNET_ID=subnet-yyy \
-  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=10240 OPENZFS_IOPS=400000 \
+  ENABLE_OPENZFS=1 OPENZFS_THROUGHPUT=7680 OPENZFS_IOPS=300000 \
   ENABLE_ONTAP=1 ONTAP_HA_PAIRS=2 ONTAP_TPUT_PER_HA=6144 ONTAP_SIZE_GIB=20480 \
   ./setup.sh
 
@@ -526,7 +526,7 @@ flowchart TD
 
 | 비용 구분 | 기본 리소스 |
 |---|---|
-| 상시 실행 | Head Node, Login Node, 필수 License Server, FSx OpenZFS 32 TiB / 10,240 MBps / 400,000 IOPS, Interface VPC Endpoint |
+| 상시 실행 | Head Node, Login Node, 필수 License Server, FSx OpenZFS 32 TiB / 7,680 MBps / 300,000 IOPS, Interface VPC Endpoint |
 | 사용량 기반 | `x8aedz.24xlarge` Compute Node(`MinCount=0`, `MaxCount=2`), 백업, 로그, 데이터 전송 |
 | 선택 | FSx for ONTAP, SSM Interface Endpoint |
 

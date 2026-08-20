@@ -244,8 +244,8 @@ CDK 스토리지 스택을 재배포한다.
 ```bash
 # config/default.env 수정:
 #   OPENZFS_SIZE_GIB=32768
-#   OPENZFS_THROUGHPUT=10240
-#   OPENZFS_IOPS=400000
+#   OPENZFS_THROUGHPUT=7680
+#   OPENZFS_IOPS=300000
 
 SKIP_CLUSTER=1 ./setup.sh
 ```

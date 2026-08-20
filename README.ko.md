@@ -182,7 +182,7 @@ setup.sh 단계:
 | `REGION` | `ap-northeast-2` | 배포 리전 |
 | `STACK_PREFIX` | `Eda` | CDK 스택·물리 리소스·SSM 경로 접두사 |
 | `VPC_ID` / `SUBNET_ID` | (필수) | 기존 VPC/Private subnet |
-| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `10240` / `400000` | 최대 성능 기준 FSx OpenZFS |
+| `ENABLE_OPENZFS` / `OPENZFS_SIZE_GIB` / `OPENZFS_THROUGHPUT` / `OPENZFS_IOPS` | `1` / `32768` / `7680` / `300000` | 고성능 FSx OpenZFS 기본값 |
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 필수 EDA 라이센스 서버 인스턴스 |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` 기본값 |
@@ -195,9 +195,9 @@ setup.sh 단계:
 FSx OpenZFS 자식 볼륨(tools/work/scratch)의 quota/reservation은 부모 용량에 비례해
 자동 스케일링됩니다(부모 용량보다 큰 quota 지정 불가 제약을 회피).
 
-기본 OpenZFS throughput과 IOPS는 서울 리전의 기본 quota를 모두 사용합니다.
-`setup.sh`가 설정된 quota 값은 사전 확인하며, 같은 리전에 다른 OpenZFS 파일
-시스템을 추가하려면 먼저 quota 증설을 요청해야 합니다.
+기본 OpenZFS throughput과 IOPS는 최대 tier보다 한 단계 낮게 설정됩니다.
+`setup.sh`는 설정값과 quota를 사전 확인합니다. 같은 리전의 기존 OpenZFS 사용량을
+포함한 합계가 quota를 넘지 않는지도 배포 전에 확인해야 합니다.
 
 ---
 

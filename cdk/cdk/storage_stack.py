@@ -5,8 +5,8 @@ Deploys one or both FSx file systems based on context flags:
   eda:enable_openzfs       bool (default: True)
   eda:enable_ontap         bool (default: False)
   eda:openzfs_size_gib     int  (default: 32768, 32 TiB)
-  eda:openzfs_throughput   int  (default: 10240 MBps)
-  eda:openzfs_iops         int  (default: 400000)
+  eda:openzfs_throughput   int  (default: 7680 MBps)
+  eda:openzfs_iops         int  (default: 300000)
   eda:ontap_size_gib       int  (default: 10240, 10 TiB)
   eda:ontap_tput_per_ha    int  (default: 3072 MBps, valid: 1536|3072|6144)
   eda:ontap_ha_pairs       int  (default: 1, 1-12)
@@ -61,8 +61,8 @@ OPENZFS_THROUGHPUT_VALUES = (160, 320, 640, 1280, 2560, 3840, 5120, 7680, 10240)
 OPENZFS_MIN_GIB = 16_384  # 16 TiB project minimum
 OPENZFS_MAX_GIB = 32_768  # 32 TiB project maximum
 OPENZFS_DEFAULT_SIZE_GIB = 32_768  # 32 TiB
-OPENZFS_DEFAULT_THROUGHPUT = 10_240
-OPENZFS_DEFAULT_IOPS = 400_000
+OPENZFS_DEFAULT_THROUGHPUT = 7_680
+OPENZFS_DEFAULT_IOPS = 300_000
 OPENZFS_MIN_IOPS_PER_GIB = 3
 OPENZFS_IOPS_PER_MBPS = 40
 # ap-northeast-2 allows a maximum of 50 provisioned IOPS per GiB.

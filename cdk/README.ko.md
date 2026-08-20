@@ -43,8 +43,8 @@ EDA on AWS 프로젝트의 CDK Python 앱. 루트 `setup.sh`가 자동으로 ven
 | `eda:enable_ssm` | `false` | bool | SSM/SSM Messages/EC2 Messages endpoint 포함 여부 |
 | `eda:enable_openzfs` | `true` | bool | FSx OpenZFS 생성 |
 | `eda:openzfs_size_gib` | `32768` | int | OpenZFS 용량 (프로젝트 범위: 16384 ~ 32768 / 16~32 TiB) |
-| `eda:openzfs_throughput` | `10240` | int | MBps: 160·320·640·1280·2560·3840·5120·7680·10240 |
-| `eda:openzfs_iops` | `400000` | int | 사용자 지정 IOPS. 용량, throughput tier, 서울 리전 한도와 함께 검증 |
+| `eda:openzfs_throughput` | `7680` | int | MBps: 160·320·640·1280·2560·3840·5120·7680·10240 |
+| `eda:openzfs_iops` | `300000` | int | 사용자 지정 IOPS. 용량, throughput tier, 서울 리전 한도와 함께 검증 |
 | `eda:enable_ontap` | `false` | bool | FSx ONTAP 생성 |
 | `eda:ontap_size_gib` | `10240` | int | ONTAP 용량 (1024 ~ 1048576) |
 | `eda:ontap_tput_per_ha` | `3072` | int | MBps/HA: 1536·3072·6144 |
@@ -70,7 +70,7 @@ cdk deploy --all --require-approval never \
   -c eda:vpc_id=vpc-xxx -c eda:subnet_id=subnet-xxx \
   -c eda:stack_prefix=MyEda \
   -c eda:enable_openzfs=1 -c eda:openzfs_size_gib=32768 \
-  -c eda:openzfs_throughput=10240 -c eda:openzfs_iops=400000
+  -c eda:openzfs_throughput=7680 -c eda:openzfs_iops=300000
 
 # 특정 스택만
 cdk deploy EdaStorage -c eda:vpc_id=... -c eda:subnet_id=...
@@ -94,8 +94,8 @@ Outputs는 `cdk deploy --outputs-file outputs.json` 으로 받고, setup.sh는 �
   부모 FS 용량 이하여야 하고, 전체 reservation 합은 부모 용량 이하여야 합니다.
   `storage_stack.py`는 부모 용량에 비례해 tools≈10% / work≈40% / scratch≈40%로
   스케일링합니다.
-- **OpenZFS 성능 검증**: 기본 `SINGLE_AZ_HA_2` 파일 시스템은 10,240 MBps와
-  사용자 지정 400,000 IOPS를 사용합니다. 스택은 합성 전에 최소 IOPS/GiB,
+- **OpenZFS 성능 검증**: 기본 `SINGLE_AZ_HA_2` 파일 시스템은 7,680 MBps와
+  사용자 지정 300,000 IOPS를 사용합니다. 스택은 합성 전에 최소 IOPS/GiB,
   throughput tier 최대 IOPS, 서울 리전의 50 IOPS/GiB 한도를 검증합니다.
 - **VPC endpoint 중복 방지**: `base_stack.py`의 `_create_vpc_endpoints_if_enabled`는
   synth 시점에 boto3로 기존 endpoint를 조회하고 재사용 가능한 외부 endpoint를

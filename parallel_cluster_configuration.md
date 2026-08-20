@@ -250,8 +250,8 @@ FSx resources are managed by CDK, not pcluster. Change the values in
 ```bash
 # Edit config/default.env:
 #   OPENZFS_SIZE_GIB=32768
-#   OPENZFS_THROUGHPUT=10240
-#   OPENZFS_IOPS=400000
+#   OPENZFS_THROUGHPUT=7680
+#   OPENZFS_IOPS=300000
 
 SKIP_CLUSTER=1 ./setup.sh
 ```
