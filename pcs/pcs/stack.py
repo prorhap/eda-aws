@@ -363,28 +363,38 @@ class PcsStack(Stack):
             (
                 "Scheduler",
                 "scheduler",
+                "scheduler",
                 "PCS_SCHEDULER_LOGS",
                 self.config.enable_scheduler_log_delivery,
             ),
             (
                 "JobCompletion",
                 "job-completion",
+                "jobs",
                 "PCS_JOBCOMP_LOGS",
                 self.config.enable_job_completion_log_delivery,
             ),
             (
                 "SchedulerAudit",
                 "scheduler-audit",
+                "audit",
                 "PCS_SCHEDULER_AUDIT_LOGS",
                 self.config.enable_scheduler_audit_log_delivery,
             ),
         )
-        for construct_suffix, log_suffix, log_type, enabled in deliveries:
+        for (
+            construct_suffix,
+            log_suffix,
+            resource_suffix,
+            log_type,
+            enabled,
+        ) in deliveries:
             if not enabled:
                 continue
             self._create_log_delivery(
                 construct_suffix=construct_suffix,
                 log_suffix=log_suffix,
+                resource_suffix=resource_suffix,
                 log_type=log_type,
                 cluster=cluster,
             )
@@ -394,40 +404,49 @@ class PcsStack(Stack):
         *,
         construct_suffix: str,
         log_suffix: str,
+        resource_suffix: str,
         log_type: str,
         cluster: pcs.CfnCluster,
     ) -> None:
-        name = f"{self.config.cluster_name}-{log_suffix}"
+        # Delivery source and destination names are account/Region scoped. Include
+        # the generated PCS cluster ID so a replacement cluster does not collide
+        # with retained or orphaned log delivery resources from an older cluster.
+        resource_name = (
+            f"{self.config.cluster_name}-{resource_suffix}-{cluster.attr_id}"
+        )
         log_group = logs.CfnLogGroup(
             self,
             f"{construct_suffix}LogGroup",
-            log_group_name=f"/aws/pcs/{self.config.cluster_name}/{log_suffix}",
+            log_group_name=(
+                f"/aws/pcs/{self.config.cluster_name}/{cluster.attr_id}/{log_suffix}"
+            ),
             retention_in_days=self.config.log_retention_days,
-            tags=self._cfn_resource_tags(name=name),
+            tags=self._cfn_resource_tags(name=resource_name),
         )
+        log_group.apply_removal_policy(cdk.RemovalPolicy.RETAIN)
         destination = logs.CfnDeliveryDestination(
             self,
             f"{construct_suffix}LogDestination",
-            name=f"{name}-destination",
+            name=f"{resource_name}-destination",
             delivery_destination_type="CWL",
             destination_resource_arn=log_group.attr_arn,
             output_format="json",
-            tags=self._cfn_resource_tags(name=name),
+            tags=self._cfn_resource_tags(name=resource_name),
         )
         source = logs.CfnDeliverySource(
             self,
             f"{construct_suffix}LogSource",
-            name=f"{name}-source",
+            name=f"{resource_name}-source",
             resource_arn=cluster.attr_arn,
             log_type=log_type,
-            tags=self._cfn_resource_tags(name=name),
+            tags=self._cfn_resource_tags(name=resource_name),
         )
         logs.CfnDelivery(
             self,
             f"{construct_suffix}LogDelivery",
             delivery_source_name=source.name,
             delivery_destination_arn=destination.attr_arn,
-            tags=self._cfn_resource_tags(name=name),
+            tags=self._cfn_resource_tags(name=resource_name),
         )
 
     def _node_lifecycle_actions(

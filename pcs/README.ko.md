@@ -413,15 +413,22 @@ CloudWatch Logs로 내보냅니다.
 
 | 변수 | 기본값 | CloudWatch Log Group | 용도 |
 |---|---:|---|---|
-| `PCS_ENABLE_SCHEDULER_LOG_DELIVERY` | `1` | `/aws/pcs/<cluster>/scheduler` | scheduler의 운영 및 장애 로그 |
-| `PCS_ENABLE_JOB_COMPLETION_LOG_DELIVERY` | `1` | `/aws/pcs/<cluster>/job-completion` | 종료 job 상태, 요청/할당 리소스, 종료 상세 |
-| `PCS_ENABLE_SCHEDULER_AUDIT_LOG_DELIVERY` | `0` | `/aws/pcs/<cluster>/scheduler-audit` | compliance 또는 집중 조사 때 사용하는 Slurm RPC audit 로그 |
+| `PCS_ENABLE_SCHEDULER_LOG_DELIVERY` | `1` | `/aws/pcs/<cluster>/<cluster-id>/scheduler` | scheduler의 운영 및 장애 로그 |
+| `PCS_ENABLE_JOB_COMPLETION_LOG_DELIVERY` | `1` | `/aws/pcs/<cluster>/<cluster-id>/job-completion` | 종료 job 상태, 요청/할당 리소스, 종료 상세 |
+| `PCS_ENABLE_SCHEDULER_AUDIT_LOG_DELIVERY` | `0` | `/aws/pcs/<cluster>/<cluster-id>/scheduler-audit` | compliance 또는 집중 조사 때 사용하는 Slurm RPC audit 로그 |
 | `PCS_LOG_RETENTION_DAYS` | `30` | 위 세 Log Group 공통 | CloudWatch Logs 보존 기간 |
 
 기본 profile은 운영 가시성을 위해 Scheduler와 Job Completion 로그를 켭니다.
 Slurm `25.11`의 Scheduler Audit 로그는 scheduler log volume의 최대 90%까지
 증가할 수 있으므로, 기본값은 비활성화합니다. Compliance 요구나 특정 조사 기간에만
 Audit을 별도 활성화하는 것이 EDA PoC와 일상 운영에 알맞습니다.
+
+Log Group 경로와 DeliverySource/DeliveryDestination 이름에는 AWS PCS가 생성한
+고유 `cluster-id`가 포함됩니다. 같은 클러스터 이름으로 PCS Cluster를 다시
+생성해도 이전 로그 리소스와 충돌하지 않으며, 과거 클러스터의 Log Group도
+클러스터 ID별로 구분해 조회할 수 있습니다. Log Group은 PCS 스택 교체 또는
+삭제 시에도 보존됩니다. 저장된 이벤트는 `PCS_LOG_RETENTION_DAYS`에 지정한
+보존 기간이 지나면 만료되므로 더 오래 보관하려면 이 값을 늘려야 합니다.
 
 이 변경은 Log delivery 리소스만 추가하거나 제거하며 PCS Cluster나 Compute Node
 Group을 교체하지 않습니다. `./pcs/pcs-setup.sh diff`로 먼저 확인하고

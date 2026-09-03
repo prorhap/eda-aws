@@ -87,6 +87,10 @@ def test_accounting_is_opt_in():
 
 def test_scheduler_and_job_completion_log_deliveries_are_enabled_by_default():
     template = synth()
+    cluster_logical_id = next(
+        iter(template.find_resources("AWS::PCS::Cluster").keys())
+    )
+    cluster_id = {"Fn::GetAtt": [cluster_logical_id, "Id"]}
 
     template.resource_count_is("AWS::Logs::LogGroup", 2)
     template.resource_count_is("AWS::Logs::DeliveryDestination", 2)
@@ -97,11 +101,32 @@ def test_scheduler_and_job_completion_log_deliveries_are_enabled_by_default():
         resource["Properties"]
         for resource in template.find_resources("AWS::Logs::LogGroup").values()
     ]
-    assert {resource["LogGroupName"] for resource in log_groups} == {
-        "/aws/pcs/eda-pcs-cluster/scheduler",
-        "/aws/pcs/eda-pcs-cluster/job-completion",
-    }
+    assert [resource["LogGroupName"] for resource in log_groups] == [
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "/aws/pcs/eda-pcs-cluster/",
+                    cluster_id,
+                    "/scheduler",
+                ],
+            ]
+        },
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "/aws/pcs/eda-pcs-cluster/",
+                    cluster_id,
+                    "/job-completion",
+                ],
+            ]
+        },
+    ]
     assert all(resource["RetentionInDays"] == 30 for resource in log_groups)
+    for resource in template.find_resources("AWS::Logs::LogGroup").values():
+        assert resource["DeletionPolicy"] == "Retain"
+        assert resource["UpdateReplacePolicy"] == "Retain"
 
     sources = [
         resource["Properties"]
@@ -111,16 +136,78 @@ def test_scheduler_and_job_completion_log_deliveries_are_enabled_by_default():
         "PCS_SCHEDULER_LOGS",
         "PCS_JOBCOMP_LOGS",
     }
+    assert [resource["Name"] for resource in sources] == [
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "eda-pcs-cluster-scheduler-",
+                    cluster_id,
+                    "-source",
+                ],
+            ]
+        },
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "eda-pcs-cluster-jobs-",
+                    cluster_id,
+                    "-source",
+                ],
+            ]
+        },
+    ]
+    destinations = [
+        resource["Properties"]
+        for resource in template.find_resources(
+            "AWS::Logs::DeliveryDestination"
+        ).values()
+    ]
+    assert [resource["Name"] for resource in destinations] == [
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "eda-pcs-cluster-scheduler-",
+                    cluster_id,
+                    "-destination",
+                ],
+            ]
+        },
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "eda-pcs-cluster-jobs-",
+                    cluster_id,
+                    "-destination",
+                ],
+            ]
+        },
+    ]
 
 
 def test_scheduler_audit_log_delivery_is_explicitly_opt_in():
     template = synth(replace(config(), enable_scheduler_audit_log_delivery=True))
+    cluster_logical_id = next(
+        iter(template.find_resources("AWS::PCS::Cluster").keys())
+    )
 
     template.resource_count_is("AWS::Logs::LogGroup", 3)
     template.has_resource_properties(
         "AWS::Logs::DeliverySource",
         {
-            "Name": "eda-pcs-cluster-scheduler-audit-source",
+            "Name": {
+                "Fn::Join": [
+                    "",
+                    [
+                        "eda-pcs-cluster-audit-",
+                        {"Fn::GetAtt": [cluster_logical_id, "Id"]},
+                        "-source",
+                    ],
+                ]
+            },
             "LogType": "PCS_SCHEDULER_AUDIT_LOGS",
         },
     )
