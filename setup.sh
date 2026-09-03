@@ -50,6 +50,20 @@
 #   LICENSE_INSTANCE_TYPE     EC2 instance type (default: m7i.large)
 #   LICENSE_MANAGER_PORT      lmgrd port (default: 27000)
 #   LICENSE_VENDOR_PORT       vendor daemon port (default: 27020)
+#   LICENSE_RETAIN_ENI        1 to keep the license ENI + its security group when the
+#                             stack is deleted, and to reuse a preserved ENI on the
+#                             next deploy (default: 1). The ENI MAC address is the
+#                             FlexNet/SCL host ID — if the ENI is lost, the EDA vendor
+#                             has to re-issue the license.
+#   LICENSE_ENI_ID            Reuse this specific ENI (default: auto-discover a
+#                             detached ENI tagged <prefix>-license-eni in SUBNET_ID).
+#                             An ENI is bound to its subnet: deploy into the same
+#                             subnet, or the MAC address cannot be preserved.
+#   LICENSE_SG_ID             Reuse this specific security group (default: read from
+#                             the reused ENI). Only used together with LICENSE_ENI_ID.
+#   LICENSE_AMI_ID            AMI with the license manager already installed
+#                             (default: latest RHEL 8). The root volume is deleted on
+#                             termination, so a rebuild needs either this or a reinstall.
 #
 #   ── Cluster topology ────────────────────────────────────────────────
 #   ENABLE_LOGIN_NODE         1 to provision ParallelCluster LoginNodes (default: 1)
@@ -307,6 +321,15 @@ validate_cluster_name() {
     || error "CLUSTER_NAME must start with a letter, contain only letters, digits, or hyphens, and be 60 characters or fewer (found: ${value})"
 }
 
+validate_aws_resource_id() {
+  local name="$1"
+  local prefix="$2"
+  local value="$3"
+  [[ -z "${value}" ]] && return 0
+  [[ "${value}" =~ ^${prefix}-([0-9a-f]{8}|[0-9a-f]{17})$ ]] \
+    || error "${name} must look like ${prefix}-0123456789abcdef0 (found: ${value})"
+}
+
 validate_ipv4_cidr() {
   local name="$1"
   local value="$2"
@@ -327,17 +350,29 @@ DCV_ALLOWED_IPS="${DCV_ALLOWED_IPS:-}"
 LICENSE_INSTANCE_TYPE="${LICENSE_INSTANCE_TYPE:-m7i.large}"
 LICENSE_MANAGER_PORT="${LICENSE_MANAGER_PORT:-27000}"
 LICENSE_VENDOR_PORT="${LICENSE_VENDOR_PORT:-27020}"
+LICENSE_RETAIN_ENI="${LICENSE_RETAIN_ENI:-1}"
+LICENSE_ENI_ID="${LICENSE_ENI_ID:-}"
+LICENSE_SG_ID="${LICENSE_SG_ID:-}"
+LICENSE_AMI_ID="${LICENSE_AMI_ID:-}"
 CLUSTER_WAIT_TIMEOUT_SECONDS="${CLUSTER_WAIT_TIMEOUT_SECONDS:-3600}"
 CLUSTER_STATUS_ERROR_LIMIT="${CLUSTER_STATUS_ERROR_LIMIT:-5}"
 CLUSTER_POLL_INTERVAL_SECONDS="${CLUSTER_POLL_INTERVAL_SECONDS:-30}"
 
 validate_stack_prefix "${STACK_PREFIX}"
+# CDK derives physical resource names from the lowercased stack prefix (cdk/naming.py).
+STACK_PREFIX_LOWER=$(echo "${STACK_PREFIX}" | tr '[:upper:]' '[:lower:]')
 validate_cluster_name "${CLUSTER_NAME}"
 validate_binary_flag "ENABLE_LOGIN_NODE" "${ENABLE_LOGIN_NODE}"
 validate_binary_flag "ENABLE_SSM" "${ENABLE_SSM}"
 validate_binary_flag "ENABLE_DCV" "${ENABLE_DCV}"
 validate_tcp_port "LICENSE_MANAGER_PORT" "${LICENSE_MANAGER_PORT}"
 validate_tcp_port "LICENSE_VENDOR_PORT" "${LICENSE_VENDOR_PORT}"
+validate_binary_flag "LICENSE_RETAIN_ENI" "${LICENSE_RETAIN_ENI}"
+validate_aws_resource_id "LICENSE_ENI_ID" "eni" "${LICENSE_ENI_ID}"
+validate_aws_resource_id "LICENSE_SG_ID" "sg" "${LICENSE_SG_ID}"
+validate_aws_resource_id "LICENSE_AMI_ID" "ami" "${LICENSE_AMI_ID}"
+[[ -z "${LICENSE_SG_ID}" || -n "${LICENSE_ENI_ID}" ]] \
+  || error "LICENSE_SG_ID requires LICENSE_ENI_ID (a security group is only reused together with its ENI)"
 [[ "${LICENSE_MANAGER_PORT}" != "${LICENSE_VENDOR_PORT}" ]] \
   || error "LICENSE_MANAGER_PORT and LICENSE_VENDOR_PORT must differ"
 if [[ -n "${ENABLE_LICENSE_SERVER+x}" && "${ENABLE_LICENSE_SERVER}" != "1" ]]; then
@@ -752,6 +787,62 @@ else
 
   info "Stack prefix: ${STACK_PREFIX} → ${BASE_STACK}, ${STORAGE_STACK}, ${LICENSE_STACK}"
 
+  # ── License server MAC address (ENI) persistence ──
+  # The ENI MAC address is the FlexNet/SCL host ID. With LICENSE_RETAIN_ENI=1 the ENI
+  # and its security group survive stack deletion, so a rebuild can reattach the same
+  # ENI and keep the license valid. An ENI never leaves the subnet it was created in.
+  if [[ "${LICENSE_RETAIN_ENI}" == "1" && -z "${LICENSE_ENI_ID}" ]]; then
+    aws_capture PRESERVED_ENIS "Preserved license ENI lookup" \
+      aws ec2 describe-network-interfaces --region "${REGION}" \
+      --filters "Name=tag:Name,Values=${STACK_PREFIX_LOWER}-license-eni" \
+                "Name=subnet-id,Values=${SUBNET_ID}" \
+                "Name=status,Values=available" \
+      --query 'NetworkInterfaces[].NetworkInterfaceId' --output json
+    PRESERVED_ENI_COUNT=$(echo "${PRESERVED_ENIS}" | jq 'length')
+    if [[ "${PRESERVED_ENI_COUNT}" == "1" ]]; then
+      LICENSE_ENI_ID=$(echo "${PRESERVED_ENIS}" | jq -r '.[0]')
+      info "Found a preserved license ENI (${LICENSE_ENI_ID}) — reusing it so the license MAC address stays the same."
+    elif [[ "${PRESERVED_ENI_COUNT}" != "0" ]]; then
+      error "Multiple detached license ENIs in ${SUBNET_ID}: $(echo "${PRESERVED_ENIS}" | jq -r 'join(", ")'). Set LICENSE_ENI_ID to choose one."
+    fi
+  fi
+
+  if [[ -n "${LICENSE_ENI_ID}" ]]; then
+    aws_capture LICENSE_ENI_JSON "License ENI lookup (${LICENSE_ENI_ID})" \
+      aws ec2 describe-network-interfaces --network-interface-ids "${LICENSE_ENI_ID}" \
+      --region "${REGION}" --output json
+    ENI_VPC=$(echo "${LICENSE_ENI_JSON}" | jq -r '.NetworkInterfaces[0].VpcId')
+    ENI_SUBNET=$(echo "${LICENSE_ENI_JSON}" | jq -r '.NetworkInterfaces[0].SubnetId')
+    ENI_STATUS=$(echo "${LICENSE_ENI_JSON}" | jq -r '.NetworkInterfaces[0].Status')
+    ENI_MAC=$(echo "${LICENSE_ENI_JSON}" | jq -r '.NetworkInterfaces[0].MacAddress')
+    [[ "${ENI_VPC}" == "${VPC_ID}" ]] \
+      || error "LICENSE_ENI_ID ${LICENSE_ENI_ID} lives in ${ENI_VPC}, not ${VPC_ID}. An ENI cannot move between VPCs, so MAC ${ENI_MAC} cannot be preserved here."
+    [[ "${ENI_SUBNET}" == "${SUBNET_ID}" ]] \
+      || error "LICENSE_ENI_ID ${LICENSE_ENI_ID} is bound to subnet ${ENI_SUBNET}, but SUBNET_ID=${SUBNET_ID}. An ENI cannot move between subnets — deploy into ${ENI_SUBNET} to keep MAC ${ENI_MAC}."
+    if [[ "${ENI_STATUS}" != "available" ]]; then
+      ENI_HOLDER=$(echo "${LICENSE_ENI_JSON}" | jq -r '.NetworkInterfaces[0].Attachment.InstanceId // "unknown"')
+      ENI_HOLDER_NAME="none"
+      if [[ "${ENI_HOLDER}" != "unknown" ]]; then
+        aws_capture ENI_HOLDER_NAME "Attached instance lookup (${ENI_HOLDER})" \
+          aws ec2 describe-instances --instance-ids "${ENI_HOLDER}" --region "${REGION}" \
+          --query 'Reservations[0].Instances[0].Tags[?Key==`Name`]|[0].Value' --output text
+      fi
+      [[ "${ENI_HOLDER_NAME}" == "${STACK_PREFIX_LOWER}-license-server" ]] \
+        || error "LICENSE_ENI_ID ${LICENSE_ENI_ID} is ${ENI_STATUS} (attached to ${ENI_HOLDER}). Detach or terminate that instance before reusing the ENI."
+      info "License ENI ${LICENSE_ENI_ID} is already attached to the running license server (${ENI_HOLDER}) — MAC ${ENI_MAC} unchanged."
+    fi
+    if [[ -z "${LICENSE_SG_ID}" ]]; then
+      LICENSE_SG_ID=$(echo "${LICENSE_ENI_JSON}" | jq -r '.NetworkInterfaces[0].Groups[0].GroupId // empty')
+      [[ -n "${LICENSE_SG_ID}" ]] \
+        || error "ENI ${LICENSE_ENI_ID} has no security group. Set LICENSE_SG_ID explicitly."
+    fi
+    info "Reusing license ENI ${LICENSE_ENI_ID} (MAC ${ENI_MAC}) with security group ${LICENSE_SG_ID} in ${ENI_SUBNET}"
+  elif [[ "${LICENSE_RETAIN_ENI}" == "1" ]]; then
+    info "License ENI + security group will be retained on stack deletion (LICENSE_RETAIN_ENI=1) so the license MAC address survives a rebuild."
+  else
+    warn "LICENSE_RETAIN_ENI=0 — deleting ${LICENSE_STACK} destroys the ENI and its MAC address, which forces an EDA license re-host."
+  fi
+
   # bootstrap also synthesizes the app, so it must receive exactly the same
   # feature context as deploy.
   CDK_CONTEXT_ARGS=(
@@ -772,7 +863,17 @@ else
     -c "eda:license_instance_type=${LICENSE_INSTANCE_TYPE}"
     -c "eda:license_manager_port=${LICENSE_MANAGER_PORT}"
     -c "eda:license_vendor_port=${LICENSE_VENDOR_PORT}"
+    -c "eda:license_retain_eni=${LICENSE_RETAIN_ENI}"
   )
+  if [[ -n "${LICENSE_ENI_ID}" ]]; then
+    CDK_CONTEXT_ARGS+=(
+      -c "eda:license_eni_id=${LICENSE_ENI_ID}"
+      -c "eda:license_sg_id=${LICENSE_SG_ID}"
+    )
+  fi
+  if [[ -n "${LICENSE_AMI_ID}" ]]; then
+    CDK_CONTEXT_ARGS+=( -c "eda:license_ami_id=${LICENSE_AMI_ID}" )
+  fi
 
   # A stack whose initial create rolled back cannot be updated. Remove only
   # failed initial-create stacks, children first; never delete a usable stack.
@@ -1014,6 +1115,31 @@ LIC_MAC=$(aws ec2 describe-network-interfaces \
   --region "${REGION}" \
   --query 'NetworkInterfaces[0].MacAddress' \
   --output text 2>/dev/null || echo "unknown")
+LIC_ENI_MODE=$(jq -r --arg s "${LICENSE_STACK}" '.[$s].LicenseEniMode // "unknown"' "${OUTPUTS}")
+
+# Compare against the MAC recorded on the previous run. EDA licenses are bound to this
+# host ID, so a silent change is the one failure mode that must never go unnoticed.
+LIC_MAC_PARAM="/${STACK_PREFIX_LOWER}/license/MacAddress"
+LIC_MAC_PREVIOUS=$(aws ssm get-parameter \
+  --name "${LIC_MAC_PARAM}" \
+  --query 'Parameter.Value' \
+  --output text \
+  --region "${REGION}" 2>/dev/null || echo "")
+if [[ "${LIC_MAC}" != "unknown" ]]; then
+  if [[ -n "${LIC_MAC_PREVIOUS}" && "${LIC_MAC_PREVIOUS}" != "None" \
+        && "${LIC_MAC_PREVIOUS}" != "${LIC_MAC}" ]]; then
+    warn "License server MAC address CHANGED: ${LIC_MAC_PREVIOUS} → ${LIC_MAC}"
+    warn "FlexNet/SCL licenses are bound to this host ID — the EDA vendor has to re-host the license."
+    warn "If the old ENI still exists, redeploy with LICENSE_ENI_ID=<old-eni> to restore ${LIC_MAC_PREVIOUS} instead."
+  fi
+  aws ssm put-parameter \
+    --name "${LIC_MAC_PARAM}" \
+    --value "${LIC_MAC}" \
+    --type String \
+    --overwrite \
+    --region "${REGION}" >/dev/null 2>&1 \
+    || warn "Could not record the license MAC address in SSM (${LIC_MAC_PARAM})"
+fi
 
 echo ""
 echo "══════════════════════════════════════════"
@@ -1021,6 +1147,7 @@ echo "  EDA License Server (Synopsys SCL/FlexNet defaults)"
 echo "──────────────────────────────────────────"
 echo "  Private IP:    ${LIC_IP}"
 echo "  MAC address:   ${LIC_MAC}   (= license Host ID)"
+echo "  ENI:           ${LIC_ENI} (${LIC_ENI_MODE})"
 echo "  Manager port:  ${LIC_MANAGER_PORT} (lmgrd)"
 echo "  Vendor port:   ${LIC_VENDOR_PORT} (snpslmd by default)"
 echo "  SSH:           ssh -i ${LIC_KEY_FILE} ec2-user@${LIC_IP}"

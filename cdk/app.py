@@ -30,6 +30,11 @@ Context flags (cdk -c 또는 cdk.json):
   eda:license_instance_type   str  (default: m7i.large)
   eda:license_manager_port    int  (default: 27000)
   eda:license_vendor_port     int  (default: 27020)
+  eda:license_retain_eni      bool (default: true)  ENI/SG를 스택 삭제 시 보존
+                                   (ENI MAC = 라이선스 Host ID)
+  eda:license_eni_id          str  (default: none)  보존된 ENI 재사용 → MAC 유지
+  eda:license_sg_id           str  (default: none)  보존된 SG 재사용 (eni_id와 함께 필수)
+  eda:license_ami_id          str  (default: none)  RHEL 8 대신 지정 AMI 사용
 
 Stack name override (각 스택 이름을 개별로 바꾸고 싶을 때):
   eda:base_stack_name         str  (default: "{prefix}Base")

@@ -370,6 +370,120 @@ def test_license_server_accepts_vendor_specific_ports(monkeypatch):
     )
 
 
+@pytest.fixture
+def stub_ami_lookup(monkeypatch):
+    monkeypatch.setattr(
+        ec2.MachineImage,
+        "lookup",
+        staticmethod(
+            lambda **kwargs: ec2.MachineImage.generic_linux(
+                {"ap-northeast-2": "ami-0123456789abcdef0"}
+            )
+        ),
+    )
+
+
+def synth_license_stack(context):
+    app = cdk.App(context=context)
+    vpc, subnet, cluster_sg, _, _ = imported_network(app)
+    stack = LicenseServerStack(
+        app,
+        "EdaLicenseServer",
+        vpc=vpc,
+        sg_cluster_nodes=cluster_sg,
+        primary_subnet=subnet,
+        env=ENV,
+    )
+    return assertions.Template.from_stack(stack)
+
+
+def test_license_identity_is_retained_without_inline_rules(stub_ami_lookup):
+    """ENI + SG survive stack deletion so the license host ID (MAC) is preserved.
+
+    The SG must carry no inline ingress rule: a retained SG keeps its inline rules,
+    which would collide with the rules a later deploy adds to the same group.
+    """
+    template = synth_license_stack({})
+
+    for resource in template.find_resources("AWS::EC2::NetworkInterface").values():
+        assert resource["DeletionPolicy"] == "Retain"
+    for resource in template.find_resources("AWS::EC2::SecurityGroup").values():
+        assert resource["DeletionPolicy"] == "Retain"
+        assert "SecurityGroupIngress" not in resource["Properties"]
+    # SSH plus both license daemon ports, all as standalone rule resources.
+    template.resource_count_is("AWS::EC2::SecurityGroupIngress", 3)
+    template.has_resource_properties(
+        "AWS::EC2::SecurityGroupIngress",
+        {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "CidrIp": "0.0.0.0/0"},
+    )
+    template.has_output("LicenseEniMode", {"Value": "created-retained"})
+
+
+def test_license_identity_retention_can_be_disabled(stub_ami_lookup):
+    template = synth_license_stack({"eda:license_retain_eni": False})
+
+    for resource in template.find_resources("AWS::EC2::NetworkInterface").values():
+        assert "DeletionPolicy" not in resource
+    for resource in template.find_resources("AWS::EC2::SecurityGroup").values():
+        assert "DeletionPolicy" not in resource
+    template.has_output("LicenseEniMode", {"Value": "created-ephemeral"})
+
+
+def test_license_server_reuses_preserved_eni_and_security_group(stub_ami_lookup):
+    eni_id = "eni-0123456789abcdef0"
+    sg_id = "sg-0fedcba9876543210"
+    template = synth_license_stack(
+        {"eda:license_eni_id": eni_id, "eda:license_sg_id": sg_id}
+    )
+
+    # Neither resource is recreated — the preserved pair keeps MAC and private IP.
+    template.resource_count_is("AWS::EC2::NetworkInterface", 0)
+    template.resource_count_is("AWS::EC2::SecurityGroup", 0)
+    template.has_resource_properties(
+        "AWS::EC2::Instance",
+        {"NetworkInterfaces": [{"DeviceIndex": "0", "NetworkInterfaceId": eni_id}]},
+    )
+    template.resource_count_is("AWS::EC2::SecurityGroupIngress", 3)
+    for resource in template.find_resources("AWS::EC2::SecurityGroupIngress").values():
+        assert resource["Properties"]["GroupId"] == sg_id
+    template.has_output("LicenseEniId", {"Value": eni_id})
+    template.has_output("LicenseEniMode", {"Value": "reused-existing"})
+
+
+def test_license_server_uses_custom_ami(stub_ami_lookup):
+    template = synth_license_stack({"eda:license_ami_id": "ami-0abcdef1234567890"})
+
+    template.has_resource_properties(
+        "AWS::EC2::Instance", {"ImageId": "ami-0abcdef1234567890"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "message"),
+    [
+        ({"eda:license_eni_id": "eni-0123456789abcdef0"}, "must be set together"),
+        ({"eda:license_sg_id": "sg-0123456789abcdef0"}, "must be set together"),
+        ({"eda:license_eni_id": "eni-nothex"}, "eda:license_eni_id must match"),
+        ({"eda:license_ami_id": "i-0123456789abcdef0"}, "eda:license_ami_id must match"),
+    ],
+)
+def test_license_server_rejects_invalid_identity_context(
+    stub_ami_lookup, context, message
+):
+    app = cdk.App(context=context)
+    vpc, subnet, cluster_sg, _, _ = imported_network(app)
+
+    with pytest.raises(ValueError, match=message):
+        LicenseServerStack(
+            app,
+            "EdaLicenseServer",
+            vpc=vpc,
+            sg_cluster_nodes=cluster_sg,
+            primary_subnet=subnet,
+            env=ENV,
+        )
+
+
 @pytest.mark.parametrize(
     ("context", "message"),
     [

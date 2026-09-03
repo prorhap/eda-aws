@@ -190,6 +190,9 @@ setup.sh stages:
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | Mandatory EDA license server instance |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` defaults |
+| `LICENSE_RETAIN_ENI` | `1` | 1=retain the ENI/SG on stack deletion and reuse them on redeploy, keeping the license MAC |
+| `LICENSE_ENI_ID` / `LICENSE_SG_ID` | (auto-discovered) | Reuse a specific ENI/SG |
+| `LICENSE_AMI_ID` | (RHEL 8) | AMI with the license manager pre-installed |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (recommended) |
 | `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (required CIDR) | Enable DCV, select a `g6.4xlarge` Login Node, and restrict its source network |
 | `ENABLE_VPC_ENDPOINTS` | `1` | Auto-create required endpoints |
@@ -320,6 +323,68 @@ setup.sh when generating `pcluster/pcluster-config.yaml`.
 **SSH port 22 policy**: The License server SG, like the Head Node, allows port
 22 from `0.0.0.0/0`. Since it is in a private subnet, it is not reachable from
 the internet — only from the corporate network via VPN.
+
+### Preserving the license MAC address across a reinstall
+
+FlexNet-based licenses (Synopsys and others) are **locked to a MAC address (host
+ID)**. The MAC belongs to the ENI, so deleting the ENI produces a new MAC and
+forces a license re-host request to the vendor.
+
+With `LICENSE_RETAIN_ENI=1` (the default):
+
+- The ENI and its security group get `DeletionPolicy: Retain`, so they **survive
+  stack deletion**. The security group is retained as well because deleting a
+  group that a retained ENI still references fails with `DependencyViolation`
+  and leaves the stack in `DELETE_FAILED`.
+- Every ingress rule is a standalone resource, so the retained group carries no
+  inline rules and a later deploy cannot hit `InvalidPermission.Duplicate`.
+- On the next `setup.sh` run, a **detached ENI tagged `{prefix}-license-eni` in
+  `SUBNET_ID` is discovered and reused**, keeping both the MAC and the private IP.
+- After deploying, the MAC is recorded in SSM at `/{prefix}/license/MacAddress`
+  and a warning is printed if it differs from the previous run.
+
+**Full reinstall while keeping the MAC**
+
+```bash
+# 1. Record the current MAC and ENI
+aws ssm get-parameter --name /eda/license/MacAddress --region ap-northeast-2 \
+  --query Parameter.Value --output text
+aws ssm get-parameter --name /eda/license/EniId --region ap-northeast-2 \
+  --query Parameter.Value --output text
+
+# 2. Recommended: snapshot the license manager installation as an AMI.
+#    The root EBS volume has delete_on_termination=true.
+aws ec2 create-image --instance-id <LICENSE_INSTANCE_ID> --name eda-license-backup \
+  --region ap-northeast-2
+
+# 3. Delete in this order. LicenseServer imports a Base export, so
+#    CloudFormation refuses to delete Base while LicenseServer exists.
+pcluster delete-cluster --cluster-name eda-cluster --region ap-northeast-2
+aws cloudformation delete-stack --stack-name EdaLicenseServer --region ap-northeast-2
+aws cloudformation delete-stack --stack-name EdaStorage --region ap-northeast-2
+aws cloudformation delete-stack --stack-name EdaBase --region ap-northeast-2
+
+# 4. Reinstall — the preserved ENI is found and reused automatically.
+LICENSE_AMI_ID=ami-xxxx ./setup.sh
+```
+
+**Constraints and caveats**
+
+- **An ENI is permanently bound to its subnet.** It cannot be moved to another
+  subnet or VPC, so the license server must be redeployed into the same
+  `SUBNET_ID`; `setup.sh` aborts before deploying if it does not match. The
+  cluster and FSx can move freely — they route within the same VPC and license
+  traffic is negligible.
+- The ENI must be `available` (detached). Terminate the instance still holding it
+  first.
+- **FSx is not deleted with the stack.** It carries `RemovalPolicy.RETAIN`, so
+  deleting `{prefix}Storage` leaves a billable file system behind and the next
+  deploy creates a new one. Back up the data and delete it manually.
+- **A retained KMS alias can fail the redeploy.** The `{prefix}/cloudtrail` and
+  `{prefix}/fsx-openzfs` keys are retained along with their aliases. Delete the
+  aliases (`aws kms delete-alias`) or use a different `STACK_PREFIX`.
+- Once the MAC has already changed, only a vendor re-host restores the license.
+  Deploying with `LICENSE_RETAIN_ENI=0` disables this protection entirely.
 
 ### SSH key management notes
 

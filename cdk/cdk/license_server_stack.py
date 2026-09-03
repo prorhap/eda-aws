@@ -9,7 +9,21 @@ EDA 라이센스 서버용 EC2 인스턴스 생성.
 설계 포인트:
   - ENI를 명시 생성해서 EC2에 attach → instance 교체 시에도 MAC/private IP 보존
     (라이센스가 Host ID = MAC address에 bind되는 경우 재발급 방지)
+  - MAC 영속성 (eda:license_retain_eni, default true):
+      * ENI와 Security Group에 DeletionPolicy: Retain → 스택을 삭제해도 살아남음
+      * SG를 함께 보존하는 이유: retained ENI가 SG를 참조하는 상태에서 SG를 지우면
+        DependencyViolation으로 스택 삭제가 DELETE_FAILED로 실패한다
+      * ingress 규칙은 전부 독립 리소스(AWS::EC2::SecurityGroupIngress)로 생성 →
+        SG에 inline 규칙이 남지 않으므로 재배포 시 InvalidPermission.Duplicate 없음
+  - ENI/SG 재사용 (eda:license_eni_id + eda:license_sg_id):
+      보존해 둔 ENI를 새 EC2에 attach → MAC/private IP 그대로 유지 → 라이선스 재발급 불필요
+      * ENI는 subnet에 고정된다. 반드시 ENI가 생성된 subnet(= 같은 AZ)으로 배포해야 하며
+        다른 subnet/VPC로는 이동할 수 없다
+      * ENI 상태가 available(detach 상태)이어야 attach 가능
+  - eda:license_ami_id: 라이선스 매니저/라이선스 파일이 설치된 자체 AMI로 기동
+    (root EBS는 delete_on_termination=True이므로 재생성 시 AMI 없이는 재설치 필요)
   - 전용 SSH KeyPair (eda-license-key-{account})
+    KeyPair는 이름이 고정이라 Retain 대상이 아니다 (retain하면 재배포 시 이름 충돌)
     → Private key는 SSM Parameter Store: /ec2/keypair/{key_pair_id}
   - IAM Role: AmazonSSMManagedInstanceCore + CloudWatchAgentServerPolicy
     (user_data는 없지만 추후 SSM/로그 수집용으로 부여)
@@ -42,9 +56,16 @@ EDA 라이센스 서버용 EC2 인스턴스 생성.
   - eda:license_manager_port    (default: 27000)
   - eda:license_vendor_port     (default: 27020)
   - eda:license_key_pair_name   (default: eda-license-key-{account})
+  - eda:license_retain_eni      (default: true)  ENI/SG를 스택 삭제 시 보존
+  - eda:license_eni_id          (default: none)  기존 ENI 재사용 (MAC 유지)
+  - eda:license_sg_id           (default: none)  기존 SG 재사용 (eni_id와 함께 필수)
+  - eda:license_ami_id          (default: none)  RHEL 8 lookup 대신 지정 AMI 사용
 """
 
+import re
+
 from aws_cdk import (
+    RemovalPolicy,
     Stack,
     Tags,
     aws_ec2 as ec2,
@@ -54,6 +75,16 @@ from aws_cdk import (
 )
 from constructs import Construct
 from cdk.naming import foundation_export_name, resource_prefix, ssm_path
+
+
+def _aws_id_pattern(prefix: str) -> re.Pattern:
+    """EC2 resource IDs are 8 or 17 hex characters after the type prefix."""
+    return re.compile(rf"^{prefix}-([0-9a-f]{{8}}|[0-9a-f]{{17}})$")
+
+
+_ENI_ID_PATTERN = _aws_id_pattern("eni")
+_SG_ID_PATTERN = _aws_id_pattern("sg")
+_AMI_ID_PATTERN = _aws_id_pattern("ami")
 
 
 class LicenseServerStack(Stack):
@@ -83,22 +114,55 @@ class LicenseServerStack(Stack):
                 "eda:license_manager_port and eda:license_vendor_port must differ"
             )
 
+        retain_identity = self._ctx_bool("eda:license_retain_eni", True)
+        reuse_eni_id = self._ctx_id("eda:license_eni_id", _ENI_ID_PATTERN)
+        reuse_sg_id = self._ctx_id("eda:license_sg_id", _SG_ID_PATTERN)
+        ami_id = self._ctx_id("eda:license_ami_id", _AMI_ID_PATTERN)
+        if bool(reuse_eni_id) != bool(reuse_sg_id):
+            raise ValueError(
+                "eda:license_eni_id and eda:license_sg_id must be set together. "
+                "A reused ENI keeps the security groups it was created with, so "
+                "the ingress rules must be attached to that same group."
+            )
+
         # ── Security Group ────────────────────────────────────
-        self.sg_license = ec2.SecurityGroup(
-            self,
-            "SgLicenseServer",
-            vpc=vpc,
-            description="EDA license server",
-            allow_all_outbound=True,
-        )
-        # SSH: VPC CIDR (VPN 경유 on-prem → 프라이빗 서브넷)
+        # 재사용 모드에서는 보존된 SG를 그대로 import한다. 새 SG를 만들면 기존 ENI가
+        # 여전히 옛 SG를 참조하므로 라이선스 포트가 열리지 않는다.
+        if reuse_sg_id:
+            self.sg_license = ec2.SecurityGroup.from_security_group_id(
+                self,
+                "SgLicenseServer",
+                reuse_sg_id,
+                mutable=True,
+            )
+        else:
+            self.sg_license = ec2.SecurityGroup(
+                self,
+                "SgLicenseServer",
+                vpc=vpc,
+                description="EDA license server",
+                allow_all_outbound=True,
+            )
+            if retain_identity:
+                # 보존된 ENI가 이 SG를 참조하므로 SG도 함께 남겨야 스택 삭제가 성공한다.
+                self.sg_license.node.default_child.apply_removal_policy(
+                    RemovalPolicy.RETAIN
+                )
+
         # SSH 22: 0.0.0.0/0 (HeadNode의 pcluster-managed SG와 동일 정책).
         # Private subnet이라 외부 인터넷에서 실제로 도달할 수 없고, VPN source NAT
         # 유무와 무관하게 사내망 워크스테이션에서도 접속 가능하도록 허용.
-        self.sg_license.add_ingress_rule(
-            ec2.Peer.ipv4("0.0.0.0/0"),
-            ec2.Port.tcp(22),
-            "SSH (private subnet - reachable only via VPN)",
+        # inline 규칙 대신 독립 리소스로 만든다 → 보존된 SG에 규칙이 남지 않으므로
+        # 재배포 시 InvalidPermission.Duplicate가 발생하지 않는다.
+        ec2.CfnSecurityGroupIngress(
+            self,
+            "SgLicenseServerSsh",
+            group_id=self.sg_license.security_group_id,
+            ip_protocol="tcp",
+            from_port=22,
+            to_port=22,
+            cidr_ip="0.0.0.0/0",
+            description="SSH (private subnet - reachable only via VPN)",
         )
         # License manager main + vendor daemon — cluster node에서만
         self.sg_license.add_ingress_rule(
@@ -147,28 +211,42 @@ class LicenseServerStack(Stack):
 
         # ── Static ENI (MAC/IP 영속성) ───────────────────────
         # EC2 교체해도 ENI만 detach → 새 instance에 attach 하면 MAC 유지
-        self.eni = ec2.CfnNetworkInterface(
-            self,
-            "LicenseEni",
-            subnet_id=primary_subnet.subnet_id,
-            description="EDA license server static ENI (MAC persistence)",
-            group_set=[self.sg_license.security_group_id],
-            tags=[{"key": "Name", "value": "eda-license-eni"}],
-        )
+        if reuse_eni_id:
+            # 보존해 둔 ENI를 그대로 attach. ENI가 subnet에 고정되어 있으므로
+            # 인스턴스는 primary_subnet이 아니라 ENI의 subnet에 생성된다.
+            self.eni = None
+            eni_id = reuse_eni_id
+        else:
+            self.eni = ec2.CfnNetworkInterface(
+                self,
+                "LicenseEni",
+                subnet_id=primary_subnet.subnet_id,
+                description="EDA license server static ENI (MAC persistence)",
+                group_set=[self.sg_license.security_group_id],
+                tags=[{"key": "Name", "value": f"{prefix}-license-eni"}],
+            )
+            if retain_identity:
+                self.eni.apply_removal_policy(RemovalPolicy.RETAIN)
+            eni_id = self.eni.ref
 
-        # ── RHEL 8 AMI lookup ────────────────────────────────
-        # Red Hat 공식 AMI owner: 309956199498
-        rhel8 = ec2.MachineImage.lookup(
-            name="RHEL-8.*_HVM-*-x86_64-*-Hourly2-GP3",
-            owners=["309956199498"],
-        )
+        # ── AMI ──────────────────────────────────────────────
+        # 기본은 RHEL 8 공식 AMI (Red Hat owner: 309956199498).
+        # 라이선스 매니저가 설치된 자체 AMI가 있으면 eda:license_ami_id로 지정한다.
+        if ami_id:
+            image_id = ami_id
+        else:
+            rhel8 = ec2.MachineImage.lookup(
+                name="RHEL-8.*_HVM-*-x86_64-*-Hourly2-GP3",
+                owners=["309956199498"],
+            )
+            image_id = rhel8.get_image(self).image_id
 
         # ── EC2 Instance (network_interfaces로 ENI attach) ──
         self.instance = ec2.CfnInstance(
             self,
             "LicenseInstance",
             instance_type=instance_type,
-            image_id=rhel8.get_image(self).image_id,
+            image_id=image_id,
             iam_instance_profile=instance_profile.ref,
             key_name=self.key_pair.key_pair_name,
             monitoring=True,
@@ -192,19 +270,31 @@ class LicenseServerStack(Stack):
             network_interfaces=[
                 ec2.CfnInstance.NetworkInterfaceProperty(
                     device_index="0",
-                    network_interface_id=self.eni.ref,
+                    network_interface_id=eni_id,
                 )
             ],
-            tags=[{"key": "Name", "value": "eda-license-server"}],
+            tags=[{"key": "Name", "value": f"{prefix}-license-server"}],
         )
 
         # ── Outputs ──────────────────────────────────────────
         CfnOutput(self, "LicenseInstanceId", value=self.instance.ref)
-        CfnOutput(self, "LicenseEniId", value=self.eni.ref)
+        CfnOutput(self, "LicenseEniId", value=eni_id)
+        CfnOutput(
+            self,
+            "LicenseEniMode",
+            value=(
+                "reused-existing"
+                if reuse_eni_id
+                else ("created-retained" if retain_identity else "created-ephemeral")
+            ),
+            description="created-ephemeral means the MAC address is lost on stack deletion",
+        )
         CfnOutput(
             self,
             "LicensePrivateIp",
-            value=self.eni.attr_primary_private_ip_address,
+            # ENI를 재사용할 때는 스택에 ENI 리소스가 없으므로 인스턴스에서 읽는다
+            # (primary private IP == 붙어 있는 ENI의 primary private IP).
+            value=self.instance.attr_private_ip,
             description=f"Use: export LM_LICENSE_FILE={manager_port}@<this-ip>",
         )
         CfnOutput(
@@ -258,7 +348,8 @@ class LicenseServerStack(Stack):
         # ── SSM Parameters ──────────────────────────────────
         for name, value in {
             "InstanceId": self.instance.ref,
-            "PrivateIp": self.eni.attr_primary_private_ip_address,
+            "EniId": eni_id,
+            "PrivateIp": self.instance.attr_private_ip,
             "KeyPairName": self.key_pair.key_pair_name,
             "SgId": self.sg_license.security_group_id,
             "ManagerPort": str(manager_port),
@@ -270,6 +361,28 @@ class LicenseServerStack(Stack):
                 parameter_name=ssm_path(self.node, f"license/{name}"),
                 string_value=value,
             )
+
+    def _ctx_bool(self, key: str, default: bool) -> bool:
+        value = self.node.try_get_context(key)
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    def _ctx_id(self, key: str, pattern: re.Pattern) -> str | None:
+        """Return a validated EC2 resource ID from context, or None if unset."""
+        value = self.node.try_get_context(key)
+        if value is None:
+            return None
+        value = str(value).strip()
+        if not value:
+            return None
+        if not pattern.fullmatch(value):
+            raise ValueError(
+                f"{key} must match {pattern.pattern} (found: {value})"
+            )
+        return value
 
     def _ctx_port(self, key: str, default: int) -> int:
         value = self.node.try_get_context(key)

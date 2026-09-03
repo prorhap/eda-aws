@@ -186,6 +186,9 @@ setup.sh 단계:
 | `ENABLE_ONTAP` / `ONTAP_SIZE_GIB` / `ONTAP_TPUT_PER_HA` / `ONTAP_HA_PAIRS` | `0` / `10240` / `3072` / `1` | FSx NetApp ONTAP |
 | `LICENSE_INSTANCE_TYPE` | `m7i.large` | 필수 EDA 라이센스 서버 인스턴스 |
 | `LICENSE_MANAGER_PORT` / `LICENSE_VENDOR_PORT` | `27000` / `27020` | Synopsys `lmgrd` / `snpslmd` 기본값 |
+| `LICENSE_RETAIN_ENI` | `1` | 1=ENI/SG를 스택 삭제 시 보존하고 재배포 시 재사용 → 라이선스 MAC 유지 |
+| `LICENSE_ENI_ID` / `LICENSE_SG_ID` | (자동 탐색) | 재사용할 ENI/SG를 직접 지정 |
+| `LICENSE_AMI_ID` | (RHEL 8) | 라이선스 매니저가 설치된 자체 AMI |
 | `ENABLE_LOGIN_NODE` | `1` | 1=ParallelCluster LoginNodes (권장) |
 | `ENABLE_DCV` / `DCV_ALLOWED_IPS` | `0` / (필수 CIDR) | DCV 활성화, `g6.4xlarge` Login Node 선택 및 접속 허용망 |
 | `ENABLE_VPC_ENDPOINTS` | `1` | 필수 endpoint 자동 생성 |
@@ -311,6 +314,68 @@ License Server MAC address를 사용합니다.
 **SSH 22 포트 정책**: License 서버 SG는 Head Node와 동일하게 `0.0.0.0/0`에서
 22번을 허용합니다. Private subnet이므로 인터넷에서 도달 불가, VPN 경유
 사내망에서만 접속 가능합니다.
+
+
+### 라이선스 MAC address 보존 (재설치 시)
+
+Synopsys 등 FlexNet 계열 라이선스는 **MAC address(Host ID)에 고정**됩니다. MAC은
+ENI에 속하므로, ENI가 삭제되면 새 MAC이 발급되고 벤더에 라이선스 재발급(re-host)을
+요청해야 합니다.
+
+`LICENSE_RETAIN_ENI=1`(기본값)이면 다음이 자동으로 적용됩니다.
+
+- ENI와 해당 Security Group에 `DeletionPolicy: Retain` → **스택을 삭제해도 보존**
+  (SG를 함께 보존하는 이유: 보존된 ENI가 SG를 참조하는 상태에서 SG를 삭제하면
+  `DependencyViolation`으로 스택 삭제가 실패함)
+- 모든 ingress 규칙은 독립 리소스로 생성 → 보존된 SG에 규칙이 남지 않으므로
+  재배포 시 `InvalidPermission.Duplicate` 없음
+- `setup.sh` 재실행 시 `{prefix}-license-eni` 태그가 붙은 **detach 상태 ENI를 자동
+  탐색해 재사용** → MAC과 private IP 그대로 유지
+- 배포 후 MAC을 `/{prefix}/license/MacAddress`(SSM)에 기록하고, 이전 값과 다르면
+  경고를 출력
+
+**전체 재설치 절차 (MAC 유지)**
+
+```bash
+# 1. 현재 MAC / ENI 기록
+aws ssm get-parameter --name /eda/license/MacAddress --region ap-northeast-2 \
+  --query Parameter.Value --output text
+aws ssm get-parameter --name /eda/license/EniId --region ap-northeast-2 \
+  --query Parameter.Value --output text
+
+# 2. (권장) 라이선스 매니저가 설치된 상태로 AMI 백업
+#    root EBS는 delete_on_termination=true이므로 인스턴스 삭제 시 설치 내용이 사라짐
+aws ec2 create-image --instance-id <LICENSE_INSTANCE_ID> --name eda-license-backup \
+  --region ap-northeast-2
+
+# 3. 삭제 (반드시 이 순서)
+pcluster delete-cluster --cluster-name eda-cluster --region ap-northeast-2
+#    LicenseServer가 Base의 Export를 참조하므로 Base보다 먼저 삭제해야 함
+aws cloudformation delete-stack --stack-name EdaLicenseServer --region ap-northeast-2
+aws cloudformation delete-stack --stack-name EdaStorage --region ap-northeast-2
+aws cloudformation delete-stack --stack-name EdaBase --region ap-northeast-2
+
+# 4. 재설치 — 보존된 ENI를 자동으로 찾아 재사용한다
+#    LICENSE_AMI_ID를 주면 라이선스 매니저 재설치도 불필요
+LICENSE_AMI_ID=ami-xxxx ./setup.sh
+```
+
+**제약 및 주의사항**
+
+- **ENI는 subnet에 영구히 묶입니다.** 다른 subnet이나 VPC로 옮길 수 없으므로
+  라이선스 서버는 반드시 같은 `SUBNET_ID`로 재배포해야 합니다. subnet이 다르면
+  `setup.sh`가 배포 전에 오류로 중단시킵니다. (클러스터/FSx는 다른 subnet으로
+  옮겨도 무관합니다 — 같은 VPC 안에서 라우팅되고 라이선스 트래픽은 소량입니다.)
+- 재사용할 ENI는 `available`(detach) 상태여야 합니다. 이전 인스턴스가 아직
+  붙잡고 있으면 먼저 종료하세요.
+- **FSx는 스택 삭제로 지워지지 않습니다.** `RemovalPolicy.RETAIN`이 걸려 있어
+  `{prefix}Storage`를 삭제해도 파일시스템이 남아 계속 과금되고, 재배포 시 새
+  파일시스템이 생성됩니다. 데이터 백업 후 수동 삭제하세요.
+- **KMS alias 충돌로 재배포가 실패할 수 있습니다.** `{prefix}/cloudtrail`,
+  `{prefix}/fsx-openzfs` 키도 RETAIN이라 alias가 남습니다. 재설치 전에 alias를
+  삭제하거나(`aws kms delete-alias`) `STACK_PREFIX`를 다른 값으로 바꾸세요.
+- MAC이 이미 바뀐 경우에는 벤더에 re-host를 요청하는 방법밖에 없습니다.
+  `LICENSE_RETAIN_ENI=0`으로 배포하면 이 보호 장치가 비활성화됩니다.
 
 
 ### SSH 키 관리 주의사항
