@@ -259,8 +259,9 @@ operator then performs the following manually:
 4. Install Synopsys SCL or the selected vendor's license manager binaries
 5. Place the license file (e.g., `/opt/eda/<vendor>/licenses/license.dat`)
 6. Start the vendor license daemon
-7. Configure the manager server for floating-license clients on the cluster
-   (default port: 27000):
+7. Configure the License Server hostname and the `lmgrd` TCP port from the
+   final field of the license file `SERVER` line for floating-license clients
+   on the cluster (current project default: 27000):
    ```bash
    export SNPSLMD_LICENSE_FILE=27000@<license-server-private-ip>
    # Also set this for tools that read only the generic FlexNet variable
@@ -274,12 +275,86 @@ only the manager port, while the security group must allow both ports. An
 `export` affects only the current shell; configure the same values in a
 modulefile or `/etc/profile.d/synopsys-license.sh` for cluster-wide persistence.
 
-### 5.4 Other license vendors
+### 5.4 Using an on-premises license server
 
-The EC2 license server remains mandatory when another FlexNet-compatible vendor
-is used. Set `LICENSE_MANAGER_PORT` and `LICENSE_VENDOR_PORT` to the ports fixed
+The cluster can use an existing Synopsys license server in the corporate data
+center. The AWS License Server stack may remain deployed; configure the
+cluster's license clients to point to the on-premises server. The following
+network conditions are required:
+
+- A VPN route from the cluster subnet route table to the on-premises CIDR
+- A return route from on-premises to the VPC CIDR
+- On-premises firewall rules allowing the manager port and fixed vendor daemon
+  port from the VPC or cluster subnet CIDR
+- DNS resolution of the license server hostname from Head, Login, and Compute
+  Nodes
+
+Check the `SERVER` and `VENDOR` lines in the on-premises license file for the
+actual ports. For example, when `lmgrd` uses TCP 27020 and `snpslmd` uses TCP
+27021, set the following values on the Login Node:
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+```
+
+When `sbatch` is run from the same Login Node shell, Slurm exports the current
+environment to the job by default. Dynamically launched Compute Nodes therefore
+receive both variables:
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+
+sbatch your-eda-job.sbatch  # User-provided Slurm job script
+```
+
+Verify the values inside the job:
+
+```bash
+echo "${SNPSLMD_LICENSE_FILE}"
+echo "${LM_LICENSE_FILE}"
+```
+
+#### Validate from a Compute Node
+
+Submit a short Slurm job to verify environment propagation to a dynamically
+launched Compute Node:
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+
+JOB_ID=$(sbatch --parsable --output=license-check-%j.out --wrap='
+echo "Host: $(hostname)"
+echo "SNPSLMD_LICENSE_FILE=${SNPSLMD_LICENSE_FILE}"
+echo "LM_LICENSE_FILE=${LM_LICENSE_FILE}"
+')
+
+echo "Submitted Job: ${JOB_ID}"
+```
+
+Inspect the result after the job completes:
+
+```bash
+cat "license-check-${JOB_ID}.out"
+```
+
+A successful result shows the Compute Node hostname and the submitted values
+for both variables. This confirms environment propagation only. Perform a
+minimal run of the required Synopsys tool to validate the License Server
+connection and an actual feature checkout.
+
+For the concise procedure, see
+[`docs/using-onprem-license-server.md`](docs/using-onprem-license-server.md).
+
+### 5.5 Other license vendors
+
+When using the included EC2 License Server for another FlexNet-compatible
+vendor, set `LICENSE_MANAGER_PORT` and `LICENSE_VENDOR_PORT` to the ports fixed
 in that vendor's license file. Only those configured ports are opened from the
-cluster security group.
+cluster security group. When using an on-premises server, use that vendor's
+actual manager and vendor ports in the environment and firewall configuration.
 
 ---
 

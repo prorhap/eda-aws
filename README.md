@@ -20,6 +20,9 @@ an independent AWS PCS deployment option. Default region: `ap-northeast-2`.
   environment)
 - **Detailed design docs**: [`architecture_guide.md`](architecture_guide.md) /
   [`parallel_cluster_configuration.md`](parallel_cluster_configuration.md)
+- **On-premises License Server guide**:
+  [English](docs/using-onprem-license-server.md) /
+  [한국어](docs/using-onprem-license-server.ko.md)
 - **Independent PCS guide**: [`pcs/README.md`](pcs/README.md)
 
 ### CloudFormation stacks deployed
@@ -324,6 +327,50 @@ setup.sh when generating `pcluster/pcluster-config.yaml`.
 22 from `0.0.0.0/0`. Since it is in a private subnet, it is not reachable from
 the internet — only from the corporate network via VPN.
 
+#### Using an on-premises license server
+
+The cluster can use an existing corporate Synopsys license server through the
+Site-to-Site VPN. Leave the AWS License Server stack deployed and point the
+license clients at the on-premises Synopsys License Server hostname and its
+`lmgrd` manager port from the Login Node:
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+
+sbatch your-eda-job.sbatch  # User-provided Slurm job script
+```
+
+When the variables are exported and `sbatch` is run from the same Login Node
+shell, Slurm exports the environment to the job by default, making the values
+available on the Compute Node. The actual manager/vendor ports, bidirectional
+VPN routes, on-premises firewall rules, and DNS resolution must be configured.
+
+Verify environment propagation and the license server response from a Compute
+Node with a short Slurm job:
+
+```bash
+JOB_ID=$(sbatch --parsable --output=license-check-%j.out --wrap='
+echo "Host: $(hostname)"
+echo "SNPSLMD_LICENSE_FILE=${SNPSLMD_LICENSE_FILE}"
+echo "LM_LICENSE_FILE=${LM_LICENSE_FILE}"
+')
+
+echo "Submitted Job: ${JOB_ID}"
+```
+
+After completion, inspect `license-check-<JOB_ID>.out` for the Compute Node
+hostname and both environment values. Validate the actual License Server
+connection and feature checkout with a minimal run of the customer's Synopsys
+tool. The `27020` value is an example from the Synopsys licensing page; replace
+it with the `lmgrd` TCP port in the final field of the customer's license file
+`SERVER` line.
+
+See **5.4 Using an on-premises license server** in `architecture_guide.md` for
+the network requirements and
+[`docs/using-onprem-license-server.md`](docs/using-onprem-license-server.md)
+for the concise procedure.
+
 ### Preserving the license MAC address across a reinstall
 
 FlexNet-based licenses (Synopsys and others) are **locked to a MAC address (host
@@ -557,6 +604,8 @@ eda-aws/
 │   ├── pcs/stack.py
 │   ├── scripts/preflight.py
 │   └── README.md
+├── docs/
+│   └── using-onprem-license-server.md / .ko.md
 ├── architecture_guide.md       # Overall architecture design
 └── parallel_cluster_configuration.md   # ParallelCluster environment and configuration guide
 ```

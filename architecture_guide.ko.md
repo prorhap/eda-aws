@@ -250,8 +250,9 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 4. Synopsys SCL 또는 선택한 벤더의 라이선스 매니저 바이너리 설치
 5. 라이선스 파일 배치 (예: `/opt/eda/<vendor>/licenses/license.dat`)
 6. 벤더 라이선스 데몬 기동
-7. Cluster의 floating license 클라이언트에서 manager 서버 설정
-   (기본 포트: 27000):
+7. Cluster의 floating license 클라이언트에서 License Server의 hostname과
+   라이선스 파일 `SERVER` 행 마지막 필드의 `lmgrd` TCP 포트 설정
+   (현재 프로젝트 기본값: 27000):
    ```bash
    export SNPSLMD_LICENSE_FILE=27000@<license-server-private-ip>
    # 범용 FlexNet 변수만 확인하는 툴이 있으면 함께 설정
@@ -265,11 +266,84 @@ setup 스크립트가 SSH 키와 MAC 주소를 콘솔에 출력합니다. 운영
 적용됩니다. 전체 Cluster에 영구 적용하려면 modulefile 또는
 `/etc/profile.d/synopsys-license.sh`에 같은 값을 설정합니다.
 
-### 5.4 다른 라이선스 벤더
+### 5.4 온프레미스 라이선스 서버 사용
 
-다른 FlexNet 호환 벤더를 사용해도 EC2 라이선스 서버는 필수입니다.
+사내 Data Center의 기존 Synopsys 라이선스 서버를 사용할 수도 있습니다. 이 경우
+AWS 내부 License Server 스택은 그대로 유지해도 되며, Cluster의 라이선스
+클라이언트가 온프레미스 서버를 가리키도록 설정합니다. 다음 조건이 필요합니다.
+
+- Cluster subnet의 route table에서 온프레미스 CIDR로 가는 VPN 경로
+- 온프레미스에서 VPC CIDR로 돌아오는 return route
+- 온프레미스 방화벽에서 VPC 또는 Cluster subnet CIDR로부터 manager 포트와
+  고정된 vendor daemon 포트 허용
+- Head, Login, Compute Node에서 라이선스 서버 hostname을 해석할 수 있는 DNS
+
+실제 포트는 온프레미스 라이선스 파일의 `SERVER` 및 `VENDOR` 행을 확인합니다.
+예를 들어 `lmgrd`가 TCP 27020, `snpslmd`가 TCP 27021이면 Login Node에서 다음과
+같이 설정합니다.
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+```
+
+같은 Login Node shell에서 `sbatch`를 실행하면 Slurm은 기본적으로 현재 환경을
+Job에 전달하므로, 동적으로 생성된 Compute Node에서도 두 변수를 사용할 수
+있습니다.
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+
+sbatch your-eda-job.sbatch  # 사용자가 작성한 Slurm Job 스크립트
+```
+
+Job에서 전달 여부를 확인할 수 있습니다.
+
+```bash
+echo "${SNPSLMD_LICENSE_FILE}"
+echo "${LM_LICENSE_FILE}"
+```
+
+#### Compute Node에서 검증
+
+다음과 같이 짧은 Slurm Job을 제출하면 동적으로 생성된 Compute Node에
+환경변수가 전달되었는지 확인할 수 있습니다.
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+
+JOB_ID=$(sbatch --parsable --output=license-check-%j.out --wrap='
+echo "Host: $(hostname)"
+echo "SNPSLMD_LICENSE_FILE=${SNPSLMD_LICENSE_FILE}"
+echo "LM_LICENSE_FILE=${LM_LICENSE_FILE}"
+')
+
+echo "Submitted Job: ${JOB_ID}"
+```
+
+Job 완료 후 결과를 확인합니다.
+
+```bash
+cat "license-check-${JOB_ID}.out"
+```
+
+정상 결과에서는 Compute Node hostname과 두 환경변수에 제출 시 설정한 값이
+표시됩니다. 이 결과는 환경변수 전달만 확인합니다. License Server 연결과
+feature checkout의 최종 확인은 실제 Synopsys 도구로 최소 작업을 실행합니다.
+
+Slurm 환경변수 전달과 온프레미스 서버 사용 절차는
+[`docs/using-onprem-license-server.ko.md`](docs/using-onprem-license-server.ko.md)를
+참조합니다.
+
+### 5.5 다른 라이선스 벤더
+
+포함된 EC2 License Server를 다른 FlexNet 호환 벤더에 사용하는 경우,
 `LICENSE_MANAGER_PORT`와 `LICENSE_VENDOR_PORT`를 해당 벤더 라이선스 파일에
-고정한 포트와 동일하게 설정합니다. Cluster SG에서는 설정한 두 포트만 허용됩니다.
+고정한 포트와 동일하게 설정합니다. Cluster SG에서는 설정한 두 포트만
+허용됩니다. 온프레미스 서버를 사용하는 경우에도 환경변수와 방화벽에는 해당
+벤더의 실제 manager/vendor 포트를 사용합니다.
 
 ---
 

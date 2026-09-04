@@ -17,6 +17,9 @@ AWS 위에서 EDA(simulation/regression) 환경을 FSx OpenZFS와 Slurm으로
 - **VPC**: 기존 VPC/Private subnet을 재사용 (사이트간 VPN 환경 전제)
 - **상세 설계 문서**: [`architecture_guide.md`](architecture_guide.ko.md) /
   [`parallel_cluster_configuration.md`](parallel_cluster_configuration.ko.md)
+- **온프레미스 License Server 사용 가이드**:
+  [English](docs/using-onprem-license-server.md) /
+  [한국어](docs/using-onprem-license-server.ko.md)
 - **PCS 독립 배포 가이드**: [`pcs/README.ko.md`](pcs/README.ko.md)
 
 ### 배포되는 CloudFormation 스택
@@ -315,6 +318,47 @@ License Server MAC address를 사용합니다.
 22번을 허용합니다. Private subnet이므로 인터넷에서 도달 불가, VPN 경유
 사내망에서만 접속 가능합니다.
 
+#### 온프레미스 라이선스 서버 사용
+
+기존 Site-to-Site VPN을 통해 사내 Synopsys 라이선스 서버를 사용할 수도
+있습니다. AWS License Server 스택은 그대로 두고, Login Node에서 실제
+온프레미스 Synopsys License Server의 hostname과 `lmgrd` manager 포트를
+지정합니다.
+
+```bash
+export SNPSLMD_LICENSE_FILE=27020@onprem-license.example.com
+export LM_LICENSE_FILE="${SNPSLMD_LICENSE_FILE}"
+
+sbatch your-eda-job.sbatch  # 사용자가 작성한 Slurm Job 스크립트
+```
+
+같은 Login Node shell에서 `export` 후 `sbatch`하면 Slurm이 기본적으로 해당
+환경변수를 Job에 전달하므로 Compute Node에서도 사용할 수 있습니다. 실제
+manager/vendor 포트, VPN 양방향 route, 온프레미스 방화벽 및 DNS가 준비되어
+있어야 합니다.
+
+Compute Node에서 전달 여부와 라이선스 서버 응답을 확인할 수 있습니다.
+
+```bash
+JOB_ID=$(sbatch --parsable --output=license-check-%j.out --wrap='
+echo "Host: $(hostname)"
+echo "SNPSLMD_LICENSE_FILE=${SNPSLMD_LICENSE_FILE}"
+echo "LM_LICENSE_FILE=${LM_LICENSE_FILE}"
+')
+
+echo "Submitted Job: ${JOB_ID}"
+```
+
+Job 완료 후 `license-check-<JOB_ID>.out`에서 Compute Node hostname과 두
+환경변수를 확인합니다. 실제 License Server 연결과 feature checkout은 고객이
+사용하는 Synopsys 도구의 최소 실행으로 검증합니다. `27020`은 Synopsys 공식
+라이선스 페이지의 예시이므로 실제 값은 고객 라이선스 파일 `SERVER` 행의
+마지막 필드에 지정된 `lmgrd` TCP 포트로 바꿉니다.
+
+자세한 네트워크 조건과 예제는 `architecture_guide.ko.md`의
+**5.4 온프레미스 라이선스 서버 사용**과
+[`docs/using-onprem-license-server.ko.md`](docs/using-onprem-license-server.ko.md)를
+참조하십시오.
 
 ### 라이선스 MAC address 보존 (재설치 시)
 
@@ -536,6 +580,8 @@ eda-aws/
 │   ├── pcs/stack.py
 │   ├── scripts/preflight.py
 │   └── README.ko.md
+├── docs/
+│   └── using-onprem-license-server.md / .ko.md
 ├── architecture_guide.md       # 전체 아키텍처 설계
 └── parallel_cluster_configuration.md   # ParallelCluster 환경 구성 및 설정 가이드
 ```
